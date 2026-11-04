@@ -9,6 +9,7 @@ package cdrom
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"slices"
@@ -105,9 +106,12 @@ type Cue struct {
 // chderr.InvalidCue, except for the GD-ROM multi-cue layout, which wraps
 // chderr.UnsupportedDiscType.
 func ParseCue(path string) (Cue, error) {
-	data, err := os.ReadFile(path)
+	if err := checkCueExtension(path); err != nil {
+		return Cue{}, err
+	}
+	data, err := readCue(path)
 	if err != nil {
-		return Cue{}, fmt.Errorf("%w: %w", chderr.InvalidCue, err)
+		return Cue{}, err
 	}
 	lines := cueLines(data)
 	if isGDICue(lines) {
@@ -124,6 +128,46 @@ func ParseCue(path string) (Cue, error) {
 		}
 	}
 	return p.finish()
+}
+
+// maxCueBytes is the largest file that is read as a cue sheet. A cue sheet
+// has at most 99 tracks and holds a few hundred bytes of text for each; a
+// larger file is an image or something else that was named by mistake.
+const maxCueBytes = 4 << 20
+
+// checkCueExtension refuses the formats that chdman picks another parser for,
+// by the extension as parse_toc sees it: everything after the last dot, in
+// lower case. The file is not opened, so a disc image named by mistake is not
+// read.
+func checkCueExtension(path string) error {
+	ext := ""
+	if i := strings.LastIndexByte(path, '.'); i >= 0 {
+		ext = strings.ToLower(path[i+1:])
+	}
+	switch ext {
+	case "gdi":
+		return fmt.Errorf("%w: %s is a GD-ROM .gdi; only .cue sheets are read", chderr.UnsupportedDiscType, path)
+	case "iso", "cdr", "toast", "nrg", "toc":
+		return invalid("%s is a .%s file, which chdman reads but chdman-go does not; only .cue sheets are read", path, ext)
+	}
+	return nil
+}
+
+// readCue reads a cue sheet, up to maxCueBytes.
+func readCue(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", chderr.InvalidCue, err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxCueBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", chderr.InvalidCue, err)
+	}
+	if len(data) > maxCueBytes {
+		return nil, invalid("%s is too large to be a cue sheet (over %d bytes); only .cue sheets are read", path, maxCueBytes)
+	}
+	return data, nil
 }
 
 // cueParser holds the state of parse_cue.

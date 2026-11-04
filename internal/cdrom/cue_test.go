@@ -780,3 +780,57 @@ func TestCueMultisessionGapsThatDoNotFit(t *testing.T) {
 		}
 	}
 }
+
+// chdman picks the parser from the extension. The other formats are not
+// supported here, and a big image must not be read whole looking for a cue.
+func TestParseCueOtherFormats(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want error
+	}{
+		{"disc.iso", chderr.InvalidCue}, {"disc.ISO", chderr.InvalidCue},
+		{"disc.cdr", chderr.InvalidCue}, {"disc.toast", chderr.InvalidCue},
+		{"disc.nrg", chderr.InvalidCue}, {"disc.toc", chderr.InvalidCue},
+		{"disc.gdi", chderr.UnsupportedDiscType}, {"disc.GDI", chderr.UnsupportedDiscType},
+		{"dir.d/disc.iso", chderr.InvalidCue},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, tc.name)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// A file that is a perfectly good cue if it is read as one.
+			good := "FILE \"disc.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n"
+			testimg.Bin(t, dir, "disc.bin", testimg.Track{Mode: "MODE1/2352", Frames: 8})
+			if err := os.WriteFile(path, []byte(good), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := cdrom.ParseCue(path)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if tc.want == chderr.InvalidCue && !strings.Contains(err.Error(), ".cue") {
+				t.Errorf("error %q does not name the supported input", err)
+			}
+		})
+	}
+	t.Run("no extension is a cue", func(t *testing.T) {
+		dir := t.TempDir()
+		testimg.Bin(t, dir, "disc.bin", testimg.Track{Mode: "MODE1/2352", Frames: 8})
+		path := testimg.WriteCue(t, dir, "sheet", "FILE \"disc.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n")
+		if _, err := cdrom.ParseCue(path); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("a big file is not read as a cue", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "big")
+		if err := os.WriteFile(path, make([]byte, 5<<20), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := cdrom.ParseCue(path)
+		if !errors.Is(err, chderr.InvalidCue) || !strings.Contains(err.Error(), "too large") {
+			t.Fatalf("err = %v, want InvalidCue, too large", err)
+		}
+	})
+}
