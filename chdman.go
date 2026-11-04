@@ -1,4 +1,37 @@
 // Package chdman creates, verifies, extracts and randomly reads CHD v5 files.
+//
+// It is a pure Go counterpart to MAME's chdman for bin/cue CDs and ISO DVDs,
+// built with CGO_ENABLED=0 and with no dependency on any binary. The CHDs it
+// writes carry the same rawsha1 and sha1 as chdman 0.289's for the same
+// input, and it reads and extracts the CHDs that chdman writes. Compressed
+// bytes need not match. CHD version 5 only: there are no parent files, and no
+// GD-ROM, hard disk or LaserDisc support.
+//
+// # Creating and extracting
+//
+// CreateCD turns a cue sheet and its bins into a CHD, and CreateDVD an ISO.
+// ExtractCD and ExtractDVD do the reverse. Each writes to a temporary file
+// that replaces the output only on success, so a failure or a cancelled
+// context leaves nothing behind. Compression runs on every CPU unless
+// Workers says otherwise, and the result never depends on the worker count.
+// Where chdman would silently lose input data, the same data is lost here and
+// the result's Warnings say so.
+//
+// # Reading
+//
+// Open returns a Reader, which is safe for concurrent use. ReadAt gives the
+// logical content of the CHD, ReadSector and ReadUserData address a CD or DVD
+// by sector, Tracks lists the tracks of a CD, Info describes the file, and
+// Verify recomputes its SHA-1 hashes. A Reader made by NewReader works on any
+// io.ReaderAt, such as a file on a network share.
+//
+// # Errors
+//
+// Errors wrap the sentinels ErrCorruptData, ErrHashMismatch,
+// ErrUnsupportedCodec and the like, so use errors.Is. ErrCorruptData means
+// the file's content is damaged or truncated. A failure of the underlying
+// reader, such as a network error or a closed file, is returned as itself
+// and is never reported as corruption.
 package chdman
 
 import (
