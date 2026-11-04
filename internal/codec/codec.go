@@ -34,6 +34,8 @@ func NewCompressor(t format.CodecTag, hunkBytes uint32) (Compressor, error) {
 		return newLZMACompressor(hunkBytes), nil
 	case format.CodecHuffman:
 		return huffCompressor{}, nil
+	case format.CodecFLAC:
+		return newFLACCompressor(hunkBytes), nil
 	}
 	return nil, fmt.Errorf("%w: %v", chderr.UnsupportedCodec, t)
 }
@@ -49,6 +51,8 @@ func NewDecompressor(t format.CodecTag, hunkBytes uint32) (Decompressor, error) 
 		return newLZMADecompressor(hunkBytes), nil
 	case format.CodecHuffman:
 		return huffDecompressor{}, nil
+	case format.CodecFLAC:
+		return &flacDecompressor{}, nil
 	}
 	return nil, fmt.Errorf("%w: %v", chderr.UnsupportedCodec, t)
 }
