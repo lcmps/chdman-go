@@ -47,14 +47,14 @@ func runInfo(_ context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	code := exitOK
 	if info.Disc == chdman.DiscCD {
-		tracks, err := r.CDTracks()
+		tracks, err := r.Tracks()
 		if err != nil {
 			// The rest of the report stands; only the tracks are unreadable.
 			code = fail(stderr, err)
 		}
 		for _, t := range tracks {
 			fmt.Fprintf(stdout, "TRACK:%d TYPE:%s FRAMES:%d PREGAP:%d POSTGAP:%d STARTLBA:%d\n",
-				t.Number, t.Type, int32(t.Frames), int32(t.Pregap), int32(t.Postgap), t.StartLBA)
+				t.Number, t.Type, int32(t.Frames), t.Pregap, t.Postgap, t.StartLBA)
 		}
 	}
 	return code

@@ -402,8 +402,20 @@ func TestNegativePregapMatchesChdman(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rt.Close()
-	if a, b := ro.Tracks(), rt.Tracks(); !slices.Equal(a, b) {
+	a, err := ro.Tracks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := rt.Tracks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(a, b) {
 		t.Errorf("tracks %+v, chdman's %+v", a, b)
+	}
+	// The negative pregap must read as negative, not as a huge unsigned count.
+	if len(a) != 2 || a[1].Pregap != -40 {
+		t.Errorf("track 2 pregap = %+v, want -40", a)
 	}
 }
 

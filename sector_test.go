@@ -147,8 +147,11 @@ func TestLogicalVsPhysical(t *testing.T) {
 			}
 			r := openT(t, chd)
 
-			tr := r.Tracks()
-			if len(tr) != 2 || tr[1].StartLBA != tc.wantStart || tr[1].Pregap != tc.pregap {
+			tr, err := r.Tracks()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(tr) != 2 || tr[1].StartLBA != tc.wantStart || tr[1].Pregap != int32(tc.pregap) {
 				t.Fatalf("Tracks = %+v", tr)
 			}
 			dst := make([]byte, 2352)
@@ -220,11 +223,8 @@ func lastOff(stored bool, pregap uint32) uint32 {
 func TestReadUserDataDVD(t *testing.T) {
 	chd, iso := makeDVD(t, testimg.Mixed, 300, "", 0)
 	r := openT(t, chd)
-	if r.Tracks() != nil {
-		t.Error("Tracks on a DVD is not nil")
-	}
-	if _, err := r.CDTracks(); !errors.Is(err, ErrUnsupportedDiscType) {
-		t.Errorf("CDTracks on a DVD: err = %v, want ErrUnsupportedDiscType", err)
+	if tracks, err := r.Tracks(); tracks != nil || err != nil {
+		t.Errorf("Tracks on a DVD = %v, %v; want nil, nil", tracks, err)
 	}
 	dst := make([]byte, 2048)
 	for _, lba := range []uint32{0, 1, 17, 150, 299} {
@@ -293,8 +293,8 @@ func TestReadSectorUnsupported(t *testing.T) {
 	if _, err := r.ReadUserData(0, dst, ReadOptions{}); !errors.Is(err, ErrUnsupportedDiscType) {
 		t.Errorf("ReadUserData err = %v", err)
 	}
-	if r.Tracks() != nil {
-		t.Error("Tracks on a hard disk is not nil")
+	if tracks, err := r.Tracks(); tracks != nil || !errors.Is(err, ErrUnsupportedDiscType) {
+		t.Errorf("Tracks on a hard disk = %v, %v; want nil, ErrUnsupportedDiscType", tracks, err)
 	}
 }
 

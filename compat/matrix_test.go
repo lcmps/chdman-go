@@ -826,7 +826,7 @@ func userOffset(mode string) int {
 // sessions are left out: their addresses are not exact, as documented.
 func assertSectors(t testing.TB, r *chdman.Reader, d testimg.Disc, srcDir string) {
 	t.Helper()
-	tracks, err := r.CDTracks()
+	tracks, err := r.Tracks()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -39,7 +39,10 @@ type Track struct {
 	DataSize, SubSize uint32
 	// Frames is the number of frames stored for the track, including a pregap
 	// that is stored in the data.
-	Frames, Pregap, Postgap uint32
+	Frames uint32
+	// Pregap and Postgap are in frames. chdman records a negative pregap for
+	// a cue sheet whose INDEX 00 lies in an earlier FILE than INDEX 01.
+	Pregap, Postgap int32
 	// Session is always 1: the CHD metadata does not record sessions.
 	Session int
 	// StartLBA is the logical address of INDEX 01.
@@ -55,17 +58,14 @@ type ReadOptions struct {
 	Physical bool
 }
 
-// Tracks returns the tracks of a CD CHD, or nil for any other kind of CHD or
-// when the track metadata is corrupt. CDTracks says which.
-func (r *Reader) Tracks() []Track {
-	tracks, _ := r.CDTracks()
-	return tracks
-}
-
-// CDTracks returns the tracks of a CD CHD. Any other kind of CHD gives
-// ErrUnsupportedDiscType, and track metadata that cannot be read gives
-// ErrCorruptData.
-func (r *Reader) CDTracks() ([]Track, error) {
+// Tracks returns the tracks of a CD CHD. A DVD has none and gives nil, nil;
+// any other kind of CHD (a GD-ROM, a hard disk, or one with no recognised
+// metadata) gives ErrUnsupportedDiscType, and track metadata that cannot be
+// read gives ErrCorruptData.
+func (r *Reader) Tracks() ([]Track, error) {
+	if r.info.Disc == DiscDVD {
+		return nil, nil
+	}
 	toc, err := r.cdTOC()
 	if err != nil {
 		return nil, err
@@ -74,7 +74,7 @@ func (r *Reader) CDTracks() ([]Track, error) {
 	for i, t := range toc.Tracks {
 		tracks[i] = Track{
 			Number: i + 1, Type: t.Type.String(), DataSize: t.DataSize, SubSize: t.SubSize,
-			Frames: t.Frames, Pregap: t.Pregap, Postgap: t.Postgap, Session: 1, StartLBA: t.LogFrameOfs,
+			Frames: t.Frames, Pregap: int32(t.Pregap), Postgap: int32(t.Postgap), Session: 1, StartLBA: t.LogFrameOfs,
 		}
 	}
 	return tracks, nil
