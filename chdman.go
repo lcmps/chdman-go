@@ -84,7 +84,7 @@ func (r *Reader) Tracks() ([]Track, error) {
 // CHD is a CD.
 func (r *Reader) cdTOC() (cdrom.TOC, error) {
 	if r.info.Disc != DiscCD {
-		return cdrom.TOC{}, fmt.Errorf("%w: %v CHD has no tracks", ErrUnsupportedDiscType, r.info.Disc)
+		return cdrom.TOC{}, fmt.Errorf("%w: %v has no tracks", ErrUnsupportedDiscType, r.info.Disc.description())
 	}
 	r.tocOnce.Do(func() { r.toc, r.tocErr = cdrom.ParseMetadata(r.meta) })
 	return r.toc, r.tocErr
@@ -120,7 +120,7 @@ func (r *Reader) readSector(lba uint32, dst []byte, opts ReadOptions, userData b
 		return r.readDVDSector(lba, dst)
 	case DiscCD:
 	default:
-		return 0, fmt.Errorf("%w: sector access needs a CD or DVD, this is a %v CHD", ErrUnsupportedDiscType, r.info.Disc)
+		return 0, fmt.Errorf("%w: sector access needs a CD or DVD, this is %v", ErrUnsupportedDiscType, r.info.Disc.description())
 	}
 	toc, err := r.cdTOC()
 	if err != nil {

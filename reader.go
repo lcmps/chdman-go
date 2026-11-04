@@ -46,6 +46,21 @@ func (d DiscType) String() string {
 	return "unknown"
 }
 
+// description names the kind of CHD for an error message, with its article.
+func (d DiscType) description() string {
+	switch d {
+	case DiscCD:
+		return "a CD CHD"
+	case DiscDVD:
+		return "a DVD CHD"
+	case DiscGD:
+		return "a GD-ROM CHD"
+	case DiscHD:
+		return "a hard disk CHD"
+	}
+	return "a CHD of unknown type"
+}
+
 // MetadataInfo is one metadata record of a CHD.
 type MetadataInfo struct {
 	Tag      string // four characters, such as "CHT2"

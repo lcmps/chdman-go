@@ -54,7 +54,7 @@ func ExtractDVD(ctx context.Context, chdPath, isoPath string, opts ExtractOption
 	defer r.Close()
 	info := r.Info()
 	if info.Disc != DiscDVD {
-		return ExtractResult{}, fmt.Errorf("%w: %s is a %v CHD, not a DVD", chderr.UnsupportedDiscType, chdPath, info.Disc)
+		return ExtractResult{}, fmt.Errorf("%w: %s is %v, not a DVD", chderr.UnsupportedDiscType, chdPath, info.Disc.description())
 	}
 	err = writeOutputAtomically(ctx, isoPath, opts.Force, []string{chdPath}, func(f *os.File) error {
 		return copyLogical(ctx, r, f, workerCount(opts.Workers), opts.Progress)
@@ -139,7 +139,7 @@ func ExtractCD(ctx context.Context, chdPath, cuePath string, opts ExtractCDOptio
 	defer r.Close()
 	info := r.Info()
 	if info.Disc != DiscCD {
-		return ExtractResult{}, fmt.Errorf("%w: %s is a %v CHD, not a CD", chderr.UnsupportedDiscType, chdPath, info.Disc)
+		return ExtractResult{}, fmt.Errorf("%w: %s is %v, not a CD", chderr.UnsupportedDiscType, chdPath, info.Disc.description())
 	}
 	toc, err := cdrom.ParseMetadata(r.meta)
 	if err != nil {
