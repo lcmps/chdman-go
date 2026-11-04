@@ -55,11 +55,20 @@ type ReadOptions struct {
 	Physical bool
 }
 
-// Tracks returns the tracks of a CD CHD, or nil for any other kind of CHD.
+// Tracks returns the tracks of a CD CHD, or nil for any other kind of CHD or
+// when the track metadata is corrupt. CDTracks says which.
 func (r *Reader) Tracks() []Track {
+	tracks, _ := r.CDTracks()
+	return tracks
+}
+
+// CDTracks returns the tracks of a CD CHD. Any other kind of CHD gives
+// ErrUnsupportedDiscType, and track metadata that cannot be read gives
+// ErrCorruptData.
+func (r *Reader) CDTracks() ([]Track, error) {
 	toc, err := r.cdTOC()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	tracks := make([]Track, len(toc.Tracks))
 	for i, t := range toc.Tracks {
@@ -68,7 +77,7 @@ func (r *Reader) Tracks() []Track {
 			Frames: t.Frames, Pregap: t.Pregap, Postgap: t.Postgap, Session: 1, StartLBA: t.LogFrameOfs,
 		}
 	}
-	return tracks
+	return tracks, nil
 }
 
 // cdTOC returns the table of contents, or ErrUnsupportedDiscType unless the

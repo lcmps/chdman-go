@@ -222,6 +222,9 @@ func TestReadUserDataDVD(t *testing.T) {
 	if r.Tracks() != nil {
 		t.Error("Tracks on a DVD is not nil")
 	}
+	if _, err := r.CDTracks(); !errors.Is(err, ErrUnsupportedDiscType) {
+		t.Errorf("CDTracks on a DVD: err = %v, want ErrUnsupportedDiscType", err)
+	}
 	dst := make([]byte, 2048)
 	for _, lba := range []uint32{0, 1, 17, 150, 299} {
 		for name, read := range map[string]func(uint32, []byte, ReadOptions) (int, error){"ReadUserData": r.ReadUserData, "ReadSector": r.ReadSector} {

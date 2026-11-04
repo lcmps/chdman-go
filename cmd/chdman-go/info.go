@@ -45,11 +45,19 @@ func runInfo(_ context.Context, args []string, stdout, stderr io.Writer) int {
 	for _, m := range info.Metadata {
 		fmt.Fprintf(stdout, "Metadata:     Tag='%s'  Length=%d bytes\n", m.Tag, len(m.Data))
 	}
-	for _, t := range r.Tracks() {
-		fmt.Fprintf(stdout, "TRACK:%d TYPE:%s FRAMES:%d PREGAP:%d POSTGAP:%d STARTLBA:%d\n",
-			t.Number, t.Type, int32(t.Frames), int32(t.Pregap), int32(t.Postgap), t.StartLBA)
+	code := exitOK
+	if info.Disc == chdman.DiscCD {
+		tracks, err := r.CDTracks()
+		if err != nil {
+			// The rest of the report stands; only the tracks are unreadable.
+			code = fail(stderr, err)
+		}
+		for _, t := range tracks {
+			fmt.Fprintf(stdout, "TRACK:%d TYPE:%s FRAMES:%d PREGAP:%d POSTGAP:%d STARTLBA:%d\n",
+				t.Number, t.Type, int32(t.Frames), int32(t.Pregap), int32(t.Postgap), t.StartLBA)
+		}
 	}
-	return exitOK
+	return code
 }
 
 // withCommas formats n with thousands separators, like chdman's big_int_string.

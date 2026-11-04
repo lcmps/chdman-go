@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lcmps/chdman-go/internal/chdwriter"
+	"github.com/lcmps/chdman-go/internal/format"
 	"github.com/lcmps/chdman-go/internal/testsupport/testimg"
 )
 
@@ -177,20 +179,57 @@ func TestWarningsPrinted(t *testing.T) {
 
 func TestInfoOutput(t *testing.T) {
 	dir := t.TempDir()
-	cue := makeDiscCue(t, dir)
+	// 73 frames: tracks of 40 and 33 are padded to 40 and 36, 76 frames, where
+	// padding to a whole hunk of 8 would give 80.
+	cue := testimg.Cue(t, dir, testimg.Disc{Tracks: []testimg.Track{
+		{Mode: "MODE1/2352", Frames: 40, Shape: testimg.Mixed},
+		{Mode: "AUDIO", Frames: 33, Shape: testimg.Mixed},
+	}})
 	chd := filepath.Join(dir, "d.chd")
 	wantCode(t, 0, "createcd", "-i", cue, "-o", chd, "-c", "cdzl", "-hs", "19584")
 	out, _ := wantCode(t, 0, "info", "-i", chd)
 	for _, want := range []string{
-		"File Version: 5", "Logical size: 176,256 bytes", "Hunk Size:    19,584 bytes",
+		"File Version: 5", "Logical size: 186,048 bytes", "Hunk Size:    19,584 bytes",
 		"Compression:  cdzl", "SHA1:", "Data SHA1:",
-		"TRACK:1 TYPE:MODE1_RAW", "TRACK:2 TYPE:AUDIO",
+		"TRACK:1 TYPE:MODE1_RAW FRAMES:40", "TRACK:2 TYPE:AUDIO FRAMES:33",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("info lacks %q:\n%s", want, out)
 		}
 	}
 }
+
+// Track metadata that cannot be read is reported, not shown as no tracks.
+func TestInfoReportsCorruptTracks(t *testing.T) {
+	chd := filepath.Join(t.TempDir(), "dup.chd")
+	f, err := os.Create(chd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	track := []byte("TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:8 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\x00")
+	_, _, err = chdwriter.Write(context.Background(), f, zeroSource{}, chdwriter.Options{
+		HunkBytes: 19584, UnitBytes: 2448, LogicalBytes: 4 * 19584, Workers: 1,
+		Metadata: []format.MetadataEntry{
+			{Tag: format.TagCHT2, Flags: format.FlagChecksum, Data: track},
+			{Tag: format.TagCHT2, Flags: format.FlagChecksum, Data: track},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, errOut := wantCode(t, 1, "info", "-i", chd)
+	if !strings.Contains(errOut, "track number 1 appears twice") {
+		t.Errorf("stderr %q does not report the metadata", errOut)
+	}
+	if strings.Contains(out, "TRACK:") || !strings.Contains(out, "File Version: 5") {
+		t.Errorf("stdout:\n%s", out)
+	}
+}
+
+type zeroSource struct{}
+
+func (zeroSource) ReadHunk(_ uint32, dst []byte) error { clear(dst); return nil }
 
 func TestUnknownCommand(t *testing.T) {
 	_, errOut := wantCode(t, 1, "frobnicate")
