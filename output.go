@@ -69,8 +69,11 @@ func writeOutputsAtomically(ctx context.Context, paths []string, force bool, inp
 	}
 
 	tmps := make([]*os.File, 0, len(paths))
+	// Cleanup runs unless every step succeeded, which includes a panic: the
+	// panic goes on to the caller once the temporary files are gone.
+	done := false
 	defer func() {
-		if err != nil {
+		if !done {
 			for _, tmp := range tmps {
 				tmp.Close()
 				os.Remove(tmp.Name())
@@ -120,6 +123,7 @@ func writeOutputsAtomically(ctx context.Context, paths []string, force bool, inp
 			return err
 		}
 	}
+	done = true
 	return nil
 }
 
