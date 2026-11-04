@@ -22,19 +22,24 @@ type Location struct {
 // the last frame of the disc yields an error wrapping io.EOF.
 //
 // Physical addresses count frames as stored, as physical_to_chd_lba does
-// (cdrom.cpp:73). Logical addresses are the disc
-// positions that filesystem structures use (cdrom.cpp:103): a PREGAP that is
-// not in the data shifts the track, and read_partial_sector (cdrom.cpp:379)
-// reads it as zeros, as it does a postgap. When the pregap is stored (INDEX 00
-// data), the track starts at its index 0 frame and cdrom.cpp:393-396 reads
-// from index 1 on, which is the same frame arithmetic: ChdFrameOfs plus the
-// distance from index 0.
+// (cdrom.cpp:73). Logical addresses are the disc positions that filesystem
+// structures use (cdrom.cpp:103): a PREGAP that is not in the data shifts the
+// track, and read_partial_sector (cdrom.cpp:379-388) returns zeros for an
+// address in it. That function never zeros a postgap: it reads whatever the
+// CHD holds after the track's frames. Here a postgap address gives Zero. When
+// the pregap is stored (INDEX 00 data), the track starts at its index 0 frame
+// and cdrom.cpp:393-396 reads from index 1 on, which is the same frame
+// arithmetic: ChdFrameOfs plus the distance from index 0.
 //
 // One deliberate difference: cdrom.cpp finds the track with the first
 // logframeofs above the address, so an address in a later track's pregap
-// resolves to the previous track and reads whatever follows its frames. Here
-// the address belongs to the track that owns the pregap, which is identical
-// for stored pregaps of the same sector size and gives zeros for the others.
+// resolves to the previous track and reads the frames that follow its own.
+// Those are the stored pregap frames only when the previous track has no
+// padding frames (its frame count is a multiple of four); otherwise it reads
+// the padding first, and a pregap that is not stored reads as the padding or
+// the frames after it, not zeros. Here the address belongs to the track that
+// owns the pregap, so it gives that track's real frames, or zeros for a
+// pregap that is not stored.
 func (t TOC) Locate(lba uint32, phys bool) (Location, error) {
 	addr := int64(lba)
 	for i, tr := range t.Tracks {
