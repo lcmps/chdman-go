@@ -151,32 +151,44 @@ func TestCreateDVDRejectsBadOptions(t *testing.T) {
 
 func TestCreateDVDSmallerThanHunk(t *testing.T) {
 	oracle.Require(t)
-	// chdman 0.289 writes a map CRC it cannot read back for a one-hunk file
-	// of zeros (its own verify fails with "Decompression error"), so parity
-	// is checked on Random; the zero file is checked against chdman verify
-	// and a SHA-1 of the data instead.
-	for _, shape := range []testimg.Shape{testimg.Random, testimg.Zeros} {
-		dir := t.TempDir()
-		iso := testimg.ISO(t, dir, 1, shape)
-		got := filepath.Join(dir, "got.chd")
-		res, err := CreateDVD(context.Background(), iso, got, CreateOptions{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := oracle.Verify(t, got); err != nil {
-			t.Error(err)
-		}
-		if shape == testimg.Random {
+	// chdman 0.289 sizes the compressed map's buffer without counting the
+	// exported Huffman tree (chd.cpp:2175-2176), so for some files of one to
+	// three hunks, whatever their content, the map tail it writes is garbled
+	// and chdman cannot read its own file back. The header hashes stay
+	// valid, so they are read from the raw header, skipping the map.
+	for name, shape := range map[string]testimg.Shape{"zeros": testimg.Zeros, "random": testimg.Random, "mixed": testimg.Mixed} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			iso := testimg.ISO(t, dir, 1, shape)
+			got := filepath.Join(dir, "got.chd")
+			res, err := CreateDVD(context.Background(), iso, got, CreateOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
 			want := filepath.Join(dir, "want.chd")
 			oracle.CreateDVD(t, iso, want, "", 0)
-			if w := chdInfo(t, want); res.RawSHA1 != w.RawSHA1 || res.SHA1 != w.SHA1 {
-				t.Errorf("hashes %s/%s, chdman %s/%s", res.RawSHA1, res.SHA1, w.RawSHA1, w.SHA1)
+			raw, err := os.ReadFile(want)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-		data, _ := os.ReadFile(iso)
-		if sum := sha1.Sum(data); res.RawSHA1 != hex.EncodeToString(sum[:]) {
-			t.Errorf("raw SHA-1 %s is not the SHA-1 of the data", res.RawSHA1)
-		}
+			h, err := format.ParseHeader(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w, g := hex.EncodeToString(h.RawSHA1[:]), res.RawSHA1; w != g {
+				t.Errorf("raw SHA-1 %s, chdman %s", g, w)
+			}
+			if w, g := hex.EncodeToString(h.SHA1[:]), res.SHA1; w != g {
+				t.Errorf("SHA-1 %s, chdman %s", g, w)
+			}
+			data, _ := os.ReadFile(iso)
+			if sum := sha1.Sum(data); res.RawSHA1 != hex.EncodeToString(sum[:]) {
+				t.Errorf("raw SHA-1 %s is not the SHA-1 of the data", res.RawSHA1)
+			}
+			if err := oracle.Verify(t, got); err != nil {
+				t.Errorf("chdman rejects our file: %v", err)
+			}
+		})
 	}
 }
 
