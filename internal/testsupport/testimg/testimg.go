@@ -58,6 +58,42 @@ type Disc struct {
 	Session2From int
 }
 
+// Layout is a named cue layout for tests that run over many disc shapes.
+type Layout struct {
+	Name string
+	Disc Disc
+}
+
+// Layouts returns the disc layouts that cover the cue shapes Cue can express:
+// every sector mode, one bin or one per track, INDEX 00, pregap, postgap,
+// tracks that are not a multiple of four frames, and a second session.
+func Layouts() []Layout {
+	disc := func(split bool, session2From int, tracks ...Track) Disc {
+		return Disc{Tracks: tracks, Split: split, Session2From: session2From}
+	}
+	data := func(mode string, frames int) Track { return Track{Mode: mode, Frames: frames, Shape: Mixed} }
+	audio := func(frames int) Track { return Track{Mode: "AUDIO", Frames: frames, Shape: Mixed} }
+	return []Layout{
+		{"mode1-2048", disc(false, 0, data("MODE1/2048", 40))},
+		{"mode1-2352", disc(false, 0, data("MODE1/2352", 40))},
+		{"mode2-2336", disc(false, 0, data("MODE2/2336", 40))},
+		{"mode2-2352", disc(false, 0, data("MODE2/2352", 40))},
+		{"data-audio-single", disc(false, 0, data("MODE1/2352", 40), audio(30))},
+		{"data-audio-split", disc(true, 0, data("MODE1/2352", 40), audio(30))},
+		{"index00-single", disc(false, 0, data("MODE1/2352", 40),
+			Track{Mode: "AUDIO", Frames: 30, IndexZero: 10, Shape: Mixed},
+			Track{Mode: "AUDIO", Frames: 25, IndexZero: 7, Shape: Mixed})},
+		{"index00-split", disc(true, 0, data("MODE1/2352", 40),
+			Track{Mode: "AUDIO", Frames: 30, IndexZero: 10, Shape: Mixed})},
+		{"pregap", disc(false, 0, data("MODE1/2352", 40), Track{Mode: "AUDIO", Frames: 30, Pregap: 150, Shape: Mixed})},
+		{"postgap", disc(false, 0, Track{Mode: "MODE1/2352", Frames: 40, Postgap: 75, Shape: Mixed}, audio(30))},
+		{"not-multiple-of-4", disc(false, 0, data("MODE1/2352", 41), audio(30), audio(7))},
+		{"not-multiple-of-4-split", disc(true, 0, data("MODE1/2352", 41), audio(30), audio(7))},
+		{"multisession-single-bin", disc(false, 2, data("MODE1/2352", 40), audio(30), data("MODE1/2352", 20))},
+		{"multisession-multi-bin", disc(true, 2, data("MODE1/2352", 40), audio(30), data("MODE1/2352", 20))},
+	}
+}
+
 // ISO writes sectors 2048-byte sectors to dir/image.iso and returns its path.
 func ISO(t testing.TB, dir string, sectors int, s Shape) string {
 	t.Helper()

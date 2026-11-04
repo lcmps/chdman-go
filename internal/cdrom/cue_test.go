@@ -153,39 +153,14 @@ func concatBin(t *testing.T, dir, name string, tracks ...testimg.Track) string {
 func TestCueLayouts(t *testing.T) {
 	oracle.Require(t)
 	mixed := testimg.Mixed
-	disc := func(split bool, session2From int, tracks ...testimg.Track) testimg.Disc {
-		return testimg.Disc{Tracks: tracks, Split: split, Session2From: session2From}
-	}
 	data := func(mode string, frames int) testimg.Track {
 		return testimg.Track{Mode: mode, Frames: frames, Shape: mixed}
 	}
 	audio := func(frames int) testimg.Track { return testimg.Track{Mode: "AUDIO", Frames: frames, Shape: mixed} }
 
-	cases := []struct {
-		name string
-		disc testimg.Disc
-	}{
-		{"mode1-2048", disc(false, 0, data("MODE1/2048", 40))},
-		{"mode1-2352", disc(false, 0, data("MODE1/2352", 40))},
-		{"mode2-2336", disc(false, 0, data("MODE2/2336", 40))},
-		{"mode2-2352", disc(false, 0, data("MODE2/2352", 40))},
-		{"data-audio-single", disc(false, 0, data("MODE1/2352", 40), audio(30))},
-		{"data-audio-split", disc(true, 0, data("MODE1/2352", 40), audio(30))},
-		{"index00-single", disc(false, 0, data("MODE1/2352", 40),
-			testimg.Track{Mode: "AUDIO", Frames: 30, IndexZero: 10, Shape: mixed},
-			testimg.Track{Mode: "AUDIO", Frames: 25, IndexZero: 7, Shape: mixed})},
-		{"index00-split", disc(true, 0, data("MODE1/2352", 40),
-			testimg.Track{Mode: "AUDIO", Frames: 30, IndexZero: 10, Shape: mixed})},
-		{"pregap", disc(false, 0, data("MODE1/2352", 40), testimg.Track{Mode: "AUDIO", Frames: 30, Pregap: 150, Shape: mixed})},
-		{"postgap", disc(false, 0, testimg.Track{Mode: "MODE1/2352", Frames: 40, Postgap: 75, Shape: mixed}, audio(30))},
-		{"not-multiple-of-4", disc(false, 0, data("MODE1/2352", 41), audio(30), audio(7))},
-		{"not-multiple-of-4-split", disc(true, 0, data("MODE1/2352", 41), audio(30), audio(7))},
-		{"multisession-single-bin", disc(false, 2, data("MODE1/2352", 40), audio(30), data("MODE1/2352", 20))},
-		{"multisession-multi-bin", disc(true, 2, data("MODE1/2352", 40), audio(30), data("MODE1/2352", 20))},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			assertCueMatchesChdman(t, testimg.Cue(t, t.TempDir(), c.disc))
+	for _, l := range testimg.Layouts() {
+		t.Run(l.Name, func(t *testing.T) {
+			assertCueMatchesChdman(t, testimg.Cue(t, t.TempDir(), l.Disc))
 		})
 	}
 
