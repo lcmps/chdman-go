@@ -80,6 +80,10 @@ func Ordered[In, Out any](
 				return err
 			}
 			for j := range jobs {
+				// Jobs that were queued before the cancel are not started.
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				out, err := work(j.in)
 				if err != nil {
 					return err
@@ -113,6 +117,10 @@ func Ordered[In, Out any](
 					out, ok := pending[next]
 					if !ok {
 						break
+					}
+					// Results that were ready before the cancel are not written.
+					if err := ctx.Err(); err != nil {
+						return err
 					}
 					delete(pending, next)
 					next++

@@ -189,3 +189,53 @@ func TestOrderedBounded(t *testing.T) {
 		})
 	}
 }
+
+// Once the context is done, a worker must not start the jobs that were
+// already queued for it.
+func TestOrderedWorkersStopAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int32
+	newWorker := func() (func(int) (int, error), error) {
+		return func(v int) (int, error) {
+			if calls.Add(1) == 1 {
+				time.Sleep(50 * time.Millisecond) // let the queue fill
+				cancel()
+			}
+			return v, nil
+		}, nil
+	}
+	err := Ordered(ctx, 1, countSource(100), newWorker, func(int) error { return nil })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("worker ran %d jobs, want 1: the rest were queued when the context ended", n)
+	}
+}
+
+// Results that are ready when the context ends must not reach the sink.
+func TestOrderedSinkStopsAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	newWorker := func() (func(int) (int, error), error) {
+		return func(v int) (int, error) {
+			if v == 0 {
+				time.Sleep(50 * time.Millisecond) // the others are ready first
+			}
+			return v, nil
+		}, nil
+	}
+	var sunk int
+	err := Ordered(ctx, 4, countSource(4), newWorker, func(int) error {
+		sunk++
+		cancel()
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if sunk != 1 {
+		t.Errorf("sink ran %d times, want 1: the rest were ready when the context ended", sunk)
+	}
+}
