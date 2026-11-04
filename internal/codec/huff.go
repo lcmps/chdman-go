@@ -1,5 +1,8 @@
 package codec
 
+// Translated from MAME's src/lib/util/chdcodec.cpp (BSD-3-Clause, copyright
+// Aaron Giles); see NOTICE.
+
 import (
 	"fmt"
 

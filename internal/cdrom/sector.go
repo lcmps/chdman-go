@@ -1,5 +1,8 @@
 package cdrom
 
+// Translated from MAME's src/lib/util/cdrom.cpp (BSD-3-Clause, copyright Aaron
+// Giles and R. Belmont); see NOTICE.
+
 // UserDataSize is the size of the user data of a data sector.
 const UserDataSize = 2048
 

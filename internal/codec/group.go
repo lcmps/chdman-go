@@ -1,5 +1,8 @@
 package codec
 
+// Translated from MAME's src/lib/util/chdcodec.cpp (BSD-3-Clause, copyright
+// Aaron Giles); see NOTICE.
+
 import "github.com/lcmps/chdman-go/internal/format"
 
 // Group holds up to four compressors and picks the best per hunk, like

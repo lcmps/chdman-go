@@ -1,5 +1,8 @@
 package chdman
 
+// Translated from MAME's src/tools/chdman.cpp (BSD-3-Clause, copyright Aaron
+// Giles); see NOTICE.
+
 import (
 	"context"
 	"encoding/hex"
