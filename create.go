@@ -61,6 +61,10 @@ const (
 	WarnFileUnused           WarningKind = "file-unused"
 	WarnFramesDropped        WarningKind = "frames-dropped"
 	WarnSubcodeOmitted       WarningKind = "subcode-omitted"
+	// WarnTrackDataRepeated is a track that shares its FILE with the track
+	// before it while the next track is in another FILE: chdman reads the
+	// whole file from the start for it, so it repeats the earlier track's data.
+	WarnTrackDataRepeated WarningKind = "track-data-repeated"
 )
 
 // Warning reports input data that was lost or altered.

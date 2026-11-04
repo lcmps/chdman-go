@@ -834,3 +834,50 @@ func TestParseCueOtherFormats(t *testing.T) {
 		}
 	})
 }
+
+// A UTF-8 byte order mark hides the first FILE line from chdman, which then
+// finds a track with no bin. Refusing it matches chdman; the message must say
+// what is wrong instead of naming a blank file.
+func TestCueByteOrderMarkMessage(t *testing.T) {
+	dir := t.TempDir()
+	testimg.Bin(t, dir, "a.bin", testimg.Track{Mode: "MODE1/2352", Frames: 20, Shape: testimg.Mixed})
+	body := "FILE \"a.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n"
+	path := testimg.WriteCue(t, dir, "bom.cue", "\xef\xbb\xbf"+body)
+	_, err := cdrom.ParseCue(path)
+	if !errors.Is(err, chderr.InvalidCue) || !strings.Contains(err.Error(), "byte order mark") || strings.Contains(err.Error(), "bin file  ") {
+		t.Errorf("ParseCue with a BOM = %v", err)
+	}
+	// Without a FILE line, and without a BOM, the message still names the problem.
+	path = testimg.WriteCue(t, dir, "nofile.cue", "  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n")
+	if _, err = cdrom.ParseCue(path); !errors.Is(err, chderr.InvalidCue) || !strings.Contains(err.Error(), "no FILE line") ||
+		strings.Contains(err.Error(), "byte order mark") {
+		t.Errorf("ParseCue with no FILE = %v", err)
+	}
+}
+
+// With FILE a holding tracks 1 and 2 and FILE b track 3, chdman reads all of
+// a.bin from offset 0 for track 2. The hashes follow it; a warning says so.
+func TestCueRepeatedDataWarning(t *testing.T) {
+	dir := t.TempDir()
+	testimg.Bin(t, dir, "a.bin", testimg.Track{Mode: "MODE1/2352", Frames: 60, Shape: testimg.Mixed})
+	testimg.Bin(t, dir, "b.bin", testimg.Track{Mode: "AUDIO", Frames: 50, Shape: testimg.Mixed})
+	cue := testimg.WriteCue(t, dir, "d.cue", `FILE "a.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    INDEX 01 00:00:30
+FILE "b.bin" BINARY
+  TRACK 03 AUDIO
+    INDEX 01 00:00:00
+`)
+	_, _, warns := assertCueMatchesChdman(t, cue)
+	var got []cdrom.Warning
+	for _, w := range warns {
+		if w.Kind == cdrom.WarnTrackDataRepeated {
+			got = append(got, w)
+		}
+	}
+	if len(got) != 1 || got[0].Track != 2 || !strings.Contains(got[0].Message, "a.bin") {
+		t.Errorf("repeated-data warnings = %+v (all %+v)", got, warns)
+	}
+}

@@ -49,6 +49,10 @@ const (
 	// WarnFramesOverwritten is a single-bin multisession cue with REM
 	// LEAD-OUT and a non-.img file: chdman writes zeros over real frames.
 	WarnFramesOverwritten = "frames-overwritten"
+	// WarnTrackDataRepeated is a track that shares its FILE with the track
+	// before it while the track after it is in another FILE: chdman reads the
+	// whole file from the start for it, so it repeats the earlier track's data.
+	WarnTrackDataRepeated = "track-data-repeated"
 )
 
 // TrackSource says where the frames of one track come from. Frames of the
@@ -117,7 +121,7 @@ func ParseCue(path string) (Cue, error) {
 	if isGDICue(lines) {
 		return Cue{}, fmt.Errorf("%w: %s is a GD-ROM multi-cue", chderr.UnsupportedDiscType, path)
 	}
-	p := cueParser{dir: filePath(path), trknum: -1, leadin: -1}
+	p := cueParser{dir: filePath(path), trknum: -1, leadin: -1, bom: bytes.HasPrefix(data, []byte("\xef\xbb\xbf"))}
 	for i := range p.info {
 		p.info[i].reset()
 	}
@@ -189,6 +193,7 @@ type cueParser struct {
 	lastfname  string
 	files      []string
 	isMultibin bool
+	bom        bool // the cue sheet starts with a UTF-8 byte order mark
 	warnings   []Warning
 }
 
@@ -369,7 +374,7 @@ func (p *cueParser) finish() (Cue, error) {
 			// The last track shares its bin with the one before it.
 			tlen := fileSize(in.fname)
 			if tlen == 0 {
-				return Cue{}, missingBin(in.fname)
+				return Cue{}, p.missingBin(in.fname)
 			}
 			in.offset = info[n-1].offset + p.previousRawSize(n)
 			if in.offset > tlen {
@@ -391,11 +396,19 @@ func (p *cueParser) finish() (Cue, error) {
 			// The tracks are in different files.
 			tlen := fileSize(in.fname)
 			if tlen == 0 {
-				return Cue{}, missingBin(in.fname)
+				return Cue{}, p.missingBin(in.fname)
 			}
 			t.Frames = uint32(tlen / bps)
 			in.offset = 0
 			p.trailing(n, tlen%bps)
+			if n > 0 && in.fname == info[n-1].fname {
+				p.warnings = append(p.warnings, Warning{
+					Kind:  WarnTrackDataRepeated,
+					Track: n + 1,
+					Message: fmt.Sprintf("track %d: chdman reads all of %s from the start for it, so it repeats the data of track %d and the tracks after it are not where the cue sheet puts them",
+						n+1, in.fname, n),
+				})
+			}
 		}
 		if p.flags&flagMultisession == 0 {
 			continue
@@ -558,7 +571,16 @@ func (p *cueParser) trailing(n int, extra uint64) {
 	})
 }
 
-func missingBin(name string) error {
+// missingBin is the error for a track whose bin is absent or empty. An empty
+// name means that no FILE line came before the track.
+func (p *cueParser) missingBin(name string) error {
+	if name == "" {
+		hint := ""
+		if p.bom {
+			hint = ": the cue sheet starts with a UTF-8 byte order mark, which hides its first FILE line from chdman too; save it without one"
+		}
+		return fmt.Errorf("%w: no FILE line comes before the track%s: %w", chderr.InvalidCue, hint, os.ErrNotExist)
+	}
 	return fmt.Errorf("%w: couldn't find bin file %s (or it is empty): %w", chderr.InvalidCue, name, os.ErrNotExist)
 }
 
