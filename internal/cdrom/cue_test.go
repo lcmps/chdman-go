@@ -362,9 +362,6 @@ FILE "t2.bin" BINARY
 			// recognised: no tracks, which hangs chdman.
 			return oneTrack(t, t.TempDir(), "file \"disc.bin\" binary\n  track 01 mode1/2352\n    index 01 00:00:00\n")
 		}, chderr.InvalidCue, false},
-		{"index-before-track", func(t *testing.T) string {
-			return oneTrack(t, t.TempDir(), "FILE \"disc.bin\" BINARY\n    INDEX 01 00:00:00\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n")
-		}, chderr.InvalidCue, false},
 		{"track-number-zero", func(t *testing.T) string {
 			return oneTrack(t, t.TempDir(), "FILE \"disc.bin\" BINARY\n  TRACK 00 MODE1/2352\n    INDEX 01 00:00:00\n")
 		}, chderr.InvalidCue, false},
@@ -563,5 +560,32 @@ func TestParseCueSources(t *testing.T) {
 	}
 	if toc.Tracks[1].ExtraFrames != 2 || toc.Tracks[1].ChdFrameOfs != 20 {
 		t.Errorf("track 2 = %+v", toc.Tracks[1])
+	}
+}
+
+// chdman indexes its track arrays with -1 for a command that comes before the
+// first TRACK, which happens to do no harm: the cue converts as if the command
+// were not there. TRACK 00 selects the same slot.
+func TestCueBeforeFirstTrack(t *testing.T) {
+	oracle.Require(t)
+	const track = "  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n"
+	for name, text := range map[string]string{
+		"index":         "FILE \"disc.bin\" BINARY\n    INDEX 01 00:00:00\n" + track,
+		"index-0":       "FILE \"disc.bin\" BINARY\n    INDEX 00 00:00:00\n" + track,
+		"pregap":        "FILE \"disc.bin\" BINARY\n    PREGAP 00:02:00\n" + track,
+		"postgap":       "FILE \"disc.bin\" BINARY\n    POSTGAP 00:02:00\n" + track,
+		"lead-out":      "REM LEAD-OUT 00:02:00\nFILE \"disc.bin\" BINARY\n" + track,
+		"track-00":      "FILE \"disc.bin\" BINARY\n  TRACK 00 MODE1/2352\n    INDEX 01 00:00:00\n" + track,
+		"track-00-pre":  "FILE \"disc.bin\" BINARY\n  TRACK 00 MODE1/2352\n    PREGAP 00:02:00\n    INDEX 01 00:00:10\n" + track,
+		"track-0-alias": "FILE \"disc.bin\" BINARY\n  TRACK x MODE1/2352\n    INDEX 01 00:00:00\n" + track,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			testimg.Bin(t, dir, "disc.bin", testimg.Track{Mode: "MODE1/2352", Frames: 100, Shape: testimg.Mixed})
+			toc, _, _ := assertCueMatchesChdman(t, testimg.WriteCue(t, dir, "d.cue", text))
+			if len(toc.Tracks) != 1 || toc.Tracks[0].Pregap != 0 {
+				t.Errorf("tracks = %+v", toc.Tracks)
+			}
+		})
 	}
 }

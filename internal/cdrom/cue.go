@@ -69,6 +69,14 @@ type cueTrack struct {
 	leadout int
 }
 
+// reset gives the track the state of a track that no command has touched.
+func (c *cueTrack) reset() {
+	c.leadin, c.leadout = -1, -1
+	for i := range c.idx {
+		c.idx[i] = -1
+	}
+}
+
 // ParseCue reads a cue sheet the way chdman 0.289 does and returns the
 // table of contents, where each track's data comes from, and warnings about
 // data that chdman drops or overwrites. Errors wrap chderr.InvalidCue, except
@@ -84,11 +92,9 @@ func ParseCue(path string) (TOC, []TrackSource, []Warning, error) {
 	}
 	p := cueParser{dir: filePath(path), trknum: -1, leadin: -1}
 	for i := range p.info {
-		p.info[i].leadin, p.info[i].leadout = -1, -1
-		for j := range p.info[i].idx {
-			p.info[i].idx[j] = -1
-		}
+		p.info[i].reset()
 	}
+	p.beforeInfo.reset()
 	for _, line := range lines {
 		if err := p.line(line); err != nil {
 			return TOC{}, nil, nil, err
@@ -103,6 +109,11 @@ type cueParser struct {
 	flags  uint32
 	tracks [maxTracks]Track
 	info   [maxTracks]cueTrack
+	// before is the slot of "track -1", which chdman writes to when a
+	// command comes before the first TRACK, or after a TRACK 00. Nothing
+	// reads it.
+	before     Track
+	beforeInfo cueTrack
 
 	trknum     int
 	sessionnum int
@@ -118,12 +129,13 @@ func invalid(format string, args ...any) error {
 }
 
 // current returns the track that a command applies to. chdman indexes its
-// arrays with -1 when a command comes before any TRACK.
-func (p *cueParser) current(cmd string) error {
+// arrays with -1 when a command comes before any TRACK, which writes to
+// memory that is never read; the commands have no effect then.
+func (p *cueParser) current() (*Track, *cueTrack) {
 	if p.trknum < 0 {
-		return invalid("%s before the first TRACK", cmd)
+		return &p.before, &p.beforeInfo
 	}
-	return nil
+	return &p.tracks[p.trknum], &p.info[p.trknum]
 }
 
 // line interprets one line of the cue, the body of parse_cue's read loop.
@@ -137,15 +149,12 @@ func (p *cueParser) line(buf []byte) error {
 	case "TRACK":
 		return p.track(&l)
 	case "INDEX":
-		if err := p.current("INDEX"); err != nil {
-			return err
-		}
 		idx := int(int32(strtoul(l.token())))
 		frames := msfToFrames(l.token())
 		if idx < 0 || idx > maxIndex {
 			return invalid("encountered invalid index %d", idx)
 		}
-		t, in := &p.tracks[p.trknum], &p.info[p.trknum]
+		t, in := p.current()
 		in.idx[idx] = frames
 		if idx == 1 {
 			if t.Pregap == 0 && in.idx[0] != -1 {
@@ -159,15 +168,11 @@ func (p *cueParser) line(buf []byte) error {
 			}
 		}
 	case "PREGAP":
-		if err := p.current("PREGAP"); err != nil {
-			return err
-		}
-		p.tracks[p.trknum].Pregap = uint32(msfToFrames(l.token()))
+		t, _ := p.current()
+		t.Pregap = uint32(msfToFrames(l.token()))
 	case "POSTGAP":
-		if err := p.current("POSTGAP"); err != nil {
-			return err
-		}
-		p.tracks[p.trknum].Postgap = uint32(msfToFrames(l.token()))
+		t, _ := p.current()
+		t.Postgap = uint32(msfToFrames(l.token()))
 	}
 	// FLAGS only sets control flags, which are not part of the metadata.
 	return nil
@@ -192,11 +197,8 @@ func (p *cueParser) rem(l *cueLine) error {
 		// IsoBuster and ImgBurn (single bin): the start of the lead-out.
 		// Redump and DiscImageCreator (multiple bins): its duration.
 		l.token()
-		leadout := msfToFrames(l.token())
-		if err := p.current("REM LEAD-OUT"); err != nil {
-			return err
-		}
-		p.info[p.trknum].leadout = leadout
+		_, in := p.current()
+		in.leadout = msfToFrames(l.token())
 	case bytes.HasPrefix(rest, []byte("LEAD-IN")):
 		l.token()
 		p.leadin = msfToFrames(l.token())
@@ -231,13 +233,14 @@ func (p *cueParser) file(l *cueLine) error {
 }
 
 func (p *cueParser) track(l *cueLine) error {
+	// TRACK 00, and anything that is not a number, is track -1.
 	trknum := int(int32(strtoul(l.token()) - 1))
-	if trknum < 0 || trknum >= maxTracks {
+	if trknum < -1 || trknum >= maxTracks {
 		return invalid("track number %d is out of range", trknum+1)
 	}
 	p.trknum = trknum
 	typeName := l.token()
-	t, in := &p.tracks[trknum], &p.info[trknum]
+	t, in := p.current()
 	t.Session = uint32(p.sessionnum)
 	t.Sub, t.SubSize = None, 0
 	t.PregapSub = None
