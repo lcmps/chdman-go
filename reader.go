@@ -233,8 +233,10 @@ func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
 		if err != nil {
 			return n, err
 		}
-		in := int(uint64(off) % uint64(r.hdr.HunkBytes))
-		c := copy(p[n:], data[in:min(len(data), in+int(total-uint64(off)))])
+		in := uint64(off) % uint64(r.hdr.HunkBytes)
+		// Compare as uint64: total-off can exceed an int on 32-bit builds.
+		end := min(uint64(len(data)), in+(total-uint64(off)))
+		c := copy(p[n:], data[in:end])
 		n += c
 		off += int64(c)
 	}
