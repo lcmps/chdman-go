@@ -29,7 +29,9 @@ func createTemp(path string) (*os.File, error) {
 // untouched until the final rename.
 //
 // An existing path is an error unless force is set, and path may never be the
-// same file as one of inputs, even through a symlink or a hard link.
+// same file as one of inputs, even through a symlink or a hard link. Forcing
+// over a regular file keeps its permissions; forcing over a symlink replaces
+// the link itself and leaves its target alone.
 func writeOutputAtomically(ctx context.Context, path string, force bool, inputs []string, fn func(f *os.File) error) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -52,6 +54,13 @@ func writeOutputAtomically(ctx context.Context, path string, force bool, inputs 
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if old, err := os.Lstat(path); err == nil && old.Mode().IsRegular() {
+		// A replaced file keeps its permissions. A symlink is replaced by the
+		// new file, not written through, so it has none to keep.
+		if err := tmp.Chmod(old.Mode().Perm()); err != nil {
+			return err
+		}
 	}
 	if err := tmp.Sync(); err != nil {
 		return err

@@ -24,7 +24,9 @@ type CreateOptions struct {
 	HunkBytes uint32
 	// Workers is the number of compression goroutines; zero means one per CPU.
 	Workers int
-	// Force replaces an existing output file.
+	// Force replaces an existing output file. The replacement keeps the old
+	// file's permissions. If the output path is a symbolic link, the link
+	// itself is replaced and its target is left untouched.
 	Force bool
 	// Progress, if set, is called as input bytes are consumed.
 	Progress func(done, total uint64)

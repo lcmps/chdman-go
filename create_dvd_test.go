@@ -426,3 +426,36 @@ func TestParseHunkBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateForceKeepsModeAndReplacesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	iso := testimg.ISO(t, dir, 4, testimg.Mixed)
+	out := filepath.Join(dir, "out.chd")
+	if err := os.WriteFile(out, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateDVD(context.Background(), iso, out, CreateOptions{Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(out); err != nil || st.Mode().Perm() != 0o600 {
+		t.Errorf("mode after Force = %v, %v; want 0600", st.Mode().Perm(), err)
+	}
+
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.chd")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := CreateDVD(context.Background(), iso, link, CreateOptions{Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("the link was written through, not replaced: %v, %v", st.Mode(), err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "keep" {
+		t.Errorf("the link's target changed to %q", got)
+	}
+}
