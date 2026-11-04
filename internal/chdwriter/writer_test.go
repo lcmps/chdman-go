@@ -117,7 +117,11 @@ func readBack(t *testing.T, path string) (format.Header, []format.MapEntry, []by
 	if err != nil {
 		t.Fatal(err)
 	}
-	return h, m, b
+	entries := make([]format.MapEntry, m.Len())
+	for i := range entries {
+		entries[i] = m.Entry(uint32(i))
+	}
+	return h, entries, b
 }
 
 var shapes = map[string]testimg.Shape{

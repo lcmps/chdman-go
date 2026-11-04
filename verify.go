@@ -82,7 +82,7 @@ func (r *Reader) Verify(ctx context.Context, opts VerifyOptions) (VerifyResult, 
 	remaining, total := r.hdr.LogicalBytes, r.hdr.LogicalBytes
 	err := pipeline.Ordered(ctx, opts.Workers,
 		func(yield func(uint32) bool) error {
-			for n := range uint32(len(r.entries)) {
+			for n := range r.entries.Len() {
 				if !yield(n) {
 					return nil
 				}

@@ -52,7 +52,7 @@ func ReadMetadata(r io.ReaderAt, h Header, fileSize int64) ([]MetadataEntry, err
 		if off > 1<<62 {
 			return nil, fmt.Errorf("%w: metadata offset %d", chderr.CorruptData, off)
 		}
-		if _, err := r.ReadAt(hdr[:], int64(off)); err != nil {
+		if err := ReadFullAt(r, hdr[:], int64(off)); err != nil {
 			return nil, fmt.Errorf("%w: metadata header at %d: %v", chderr.CorruptData, off, err)
 		}
 		lenFlags := binary.BigEndian.Uint32(hdr[4:])

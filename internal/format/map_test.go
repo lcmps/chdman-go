@@ -40,11 +40,12 @@ func chdmanFileShape(t *testing.T, codecs string, sectors int, shape testimg.Sha
 
 func TestReadMapFromChdman(t *testing.T) {
 	b, h := chdmanFile(t, "", 512)
-	entries, err := ReadMap(bytes.NewReader(b), h, int64(len(b)))
+	m, err := ReadMap(bytes.NewReader(b), h, int64(len(b)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uint32(len(entries)) != h.HunkCount() {
+	entries := entriesOf(m)
+	if m.Len() != h.HunkCount() {
 		t.Fatalf("got %d entries, want %d", len(entries), h.HunkCount())
 	}
 	for i, e := range entries {
@@ -74,10 +75,11 @@ func TestEncodeMapRoundTrip(t *testing.T) {
 	for name, shape := range map[string]testimg.Shape{"mixed": testimg.Mixed, "zeros": testimg.Zeros} {
 		t.Run(name, func(t *testing.T) {
 			b, h := chdmanFileShape(t, "", 512, shape)
-			entries, err := ReadMap(bytes.NewReader(b), h, int64(len(b)))
+			m, err := ReadMap(bytes.NewReader(b), h, int64(len(b)))
 			if err != nil {
 				t.Fatal(err)
 			}
+			entries := entriesOf(m)
 			if shape == testimg.Zeros && !slices.ContainsFunc(entries, func(e MapEntry) bool { return e.Type == CompSelf }) {
 				t.Fatal("expected self references in an all-zero image")
 			}
@@ -95,9 +97,18 @@ func TestEncodeMapRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			assertEntries(t, got, entries)
+			assertEntries(t, entriesOf(got), entries)
 		})
 	}
+}
+
+// entriesOf returns every entry of m.
+func entriesOf(m *Map) []MapEntry {
+	out := make([]MapEntry, m.Len())
+	for i := range out {
+		out[i] = m.Entry(uint32(i))
+	}
+	return out
 }
 
 func assertEntries(t *testing.T, got, want []MapEntry) {
@@ -150,7 +161,7 @@ func TestEncodeMapSyntheticRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertEntries(t, got, entries)
+	assertEntries(t, entriesOf(got), entries)
 }
 
 func TestReadMapRejectsBadCRC(t *testing.T) {
@@ -181,11 +192,12 @@ func TestUncompressedMap(t *testing.T) {
 	if h.Compressed() {
 		t.Fatal("expected an uncompressed CHD")
 	}
-	entries, err := ReadMap(bytes.NewReader(b), h, int64(len(b)))
+	m, err := ReadMap(bytes.NewReader(b), h, int64(len(b)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uint32(len(entries)) != h.HunkCount() {
+	entries := entriesOf(m)
+	if m.Len() != h.HunkCount() {
 		t.Fatalf("got %d entries, want %d", len(entries), h.HunkCount())
 	}
 	var zero, data int
@@ -207,11 +219,11 @@ func TestUncompressedMap(t *testing.T) {
 
 func TestUncompressedMapZeroHunks(t *testing.T) {
 	b, h := chdmanFileShape(t, "none", 64, testimg.Zeros)
-	entries, err := ReadMap(bytes.NewReader(b), h, int64(len(b)))
+	m, err := ReadMap(bytes.NewReader(b), h, int64(len(b)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, e := range entries {
+	for i, e := range entriesOf(m) {
 		if e != (MapEntry{Type: CompNone}) {
 			t.Fatalf("entry %d = %+v, want a zero hunk", i, e)
 		}

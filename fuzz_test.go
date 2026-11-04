@@ -69,6 +69,7 @@ func TestTruncatedFiles(t *testing.T) {
 }
 
 func TestHostileLengths(t *testing.T) {
+	t.Run("rle map", hostileRLEMap)
 	huge := uint64(1) << 40
 	for name, patch := range map[string]func(b []byte, h format.Header){
 		"logical bytes": func(b []byte, h format.Header) { binary.BigEndian.PutUint64(b[32:], huge) },
@@ -106,6 +107,47 @@ func TestHostileLengths(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A few kilobytes of RLE map can describe millions of hunks; opening and
+// reading such a file must not commit memory in proportion to the hunks.
+func hostileRLEMap(t *testing.T) {
+	const hunks = 4_000_000
+	entries := make([]format.MapEntry, hunks)
+	entries[0] = format.MapEntry{Type: format.CompType0, CompLen: 16}
+	for i := 1; i < hunks; i++ {
+		entries[i] = format.MapEntry{Type: format.CompSelf}
+	}
+	h := format.Header{
+		Codecs:       [4]format.CodecTag{format.CodecZlib},
+		LogicalBytes: hunks * 2048, HunkBytes: 2048, UnitBytes: 2048,
+		MapOffset: format.HeaderSize,
+	}
+	m, err := format.EncodeCompressedMap(entries, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := uint64(format.HeaderSize + len(m))
+	entries[0].Offset = first
+	if m, err = format.EncodeCompressedMap(entries, first); err != nil {
+		t.Fatal(err)
+	}
+	entries = nil
+	hdr := h.Marshal()
+	file := append(append(hdr[:], m...), make([]byte, 16)...) // hunk 0 is not valid zlib
+	if len(file) > 64<<10 {
+		t.Fatalf("file is %d bytes", len(file))
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	openErr, useErr := exercise(file)
+	runtime.ReadMemStats(&after)
+	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 64<<20 {
+		t.Errorf("allocated %d MiB for a %d byte file", alloc>>20, len(file))
+	}
+	if err := firstErr(openErr, useErr); !isCorrupt(err) {
+		t.Errorf("error %v, want ErrCorruptData", err)
 	}
 }
 

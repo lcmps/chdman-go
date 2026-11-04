@@ -121,8 +121,8 @@ func TestReadAtCD(t *testing.T) {
 
 func TestSelfReferences(t *testing.T) {
 	hasSelf := func(r *Reader) bool {
-		for _, e := range r.entries {
-			if e.Type == format.CompSelf {
+		for i := range r.entries.Len() {
+			if r.entries.Entry(i).Type == format.CompSelf {
 				return true
 			}
 		}
@@ -153,8 +153,8 @@ func TestSelfReferences(t *testing.T) {
 // storedHunk returns the file offset of a hunk that holds incompressible data.
 func storedHunk(t testing.TB, r *Reader) format.MapEntry {
 	t.Helper()
-	for _, e := range r.entries {
-		if e.Type == format.CompNone && e.CompLen > 0 {
+	for i := range r.entries.Len() {
+		if e := r.entries.Entry(i); e.Type == format.CompNone && e.CompLen > 0 {
 			return e
 		}
 	}
@@ -184,7 +184,7 @@ func TestHunkCRCChecked(t *testing.T) {
 	e := storedHunk(t, openT(t, chd))
 	flipByte(t, chd, int64(e.Offset)+10)
 	r := openT(t, chd)
-	_, err := r.ReadAt(make([]byte, 4096*len(r.entries)), 0)
+	_, err := r.ReadAt(make([]byte, 4096*int(r.entries.Len())), 0)
 	if !errors.Is(err, ErrCorruptData) {
 		t.Fatalf("ReadAt = %v, want ErrCorruptData", err)
 	}
@@ -267,4 +267,33 @@ func TestSelfReferenceOrder(t *testing.T) {
 			t.Fatal("content is not 8192 zero bytes")
 		}
 	})
+}
+
+// eofAtEnd is an io.ReaderAt that, as the interface permits, returns io.EOF
+// together with a read's last bytes.
+type eofAtEnd struct{ b []byte }
+
+func (r eofAtEnd) ReadAt(p []byte, off int64) (int, error) {
+	n := copy(p, r.b[min(off, int64(len(r.b))):])
+	if off+int64(n) >= int64(len(r.b)) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func TestReaderAcceptsEOFWithData(t *testing.T) {
+	for _, codecs := range []string{"", "none"} {
+		chd, iso := makeDVD(t, testimg.Mixed, 24, codecs, 4096)
+		b, err := os.ReadFile(chd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := NewReader(eofAtEnd{b}, int64(len(b)))
+		if err != nil {
+			t.Fatalf("codecs %q: %v", codecs, err)
+		}
+		if got := readAll(t, r); !bytes.Equal(got, iso) {
+			t.Errorf("codecs %q: content differs", codecs)
+		}
+	}
 }

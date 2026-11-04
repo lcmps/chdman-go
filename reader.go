@@ -78,7 +78,7 @@ type Reader struct {
 	closer io.Closer
 
 	hdr     format.Header
-	entries []format.MapEntry
+	entries *format.Map
 	meta    []format.MetadataEntry
 	info    Info
 
@@ -123,7 +123,7 @@ func NewReader(src io.ReaderAt, size int64) (*Reader, error) {
 		return nil, fmt.Errorf("%w: %d bytes is too short for a header", chderr.CorruptData, size)
 	}
 	var raw [format.HeaderSize]byte
-	if _, err := src.ReadAt(raw[:], 0); err != nil {
+	if err := format.ReadFullAt(src, raw[:], 0); err != nil {
 		return nil, fmt.Errorf("%w: reading header: %v", chderr.CorruptData, err)
 	}
 	hdr, err := format.ParseHeader(raw[:])
@@ -133,12 +133,6 @@ func NewReader(src io.ReaderAt, size int64) (*Reader, error) {
 	entries, err := format.ReadMap(src, hdr, size)
 	if err != nil {
 		return nil, err
-	}
-	// Self references must point backward, which also rules out cycles.
-	for i, e := range entries {
-		if e.Type == format.CompSelf && e.Offset >= uint64(i) {
-			return nil, fmt.Errorf("%w: hunk %d refers to hunk %d, which is not an earlier hunk", chderr.CorruptData, i, e.Offset)
-		}
 	}
 	meta, err := format.ReadMetadata(src, hdr, size)
 	if err != nil {
@@ -162,7 +156,7 @@ func NewReader(src io.ReaderAt, size int64) (*Reader, error) {
 	return r, nil
 }
 
-func buildInfo(h format.Header, entries []format.MapEntry, meta []format.MetadataEntry) Info {
+func buildInfo(h format.Header, entries *format.Map, meta []format.MetadataEntry) Info {
 	info := Info{
 		Version:      5,
 		LogicalBytes: h.LogicalBytes,
@@ -180,11 +174,7 @@ func buildInfo(h format.Header, entries []format.MapEntry, meta []format.Metadat
 			info.Codecs = append(info.Codecs, c.String())
 		}
 	}
-	for _, e := range entries {
-		if e.Type != format.CompSelf {
-			info.CompressedBytes += int64(e.CompLen)
-		}
-	}
+	info.CompressedBytes = entries.StoredBytes()
 	for _, m := range meta {
 		info.Metadata = append(info.Metadata, MetadataInfo{
 			Tag: format.CodecTag(m.Tag).String(), Checksum: m.Flags&format.FlagChecksum != 0, Data: m.Data,
@@ -282,11 +272,10 @@ func (r *Reader) cachedHunk(n uint32) ([]byte, error) {
 // decodeHunk fills dst (HunkBytes long) with the content of hunk n, like
 // read_hunk in chd.cpp.
 func (r *Reader) decodeHunk(n uint32, dst []byte) error {
-	e := r.entries[n]
-	// References point strictly backward, so this loop ends.
-	for e.Type == format.CompSelf {
+	e := r.entries.Entry(n)
+	if e.Type == format.CompSelf { // the map resolves chains: this is the data
 		n = uint32(e.Offset)
-		e = r.entries[n]
+		e = r.entries.Entry(n)
 	}
 	switch e.Type {
 	case format.CompType0, format.CompType1, format.CompType2, format.CompType3:
@@ -298,7 +287,7 @@ func (r *Reader) decodeHunk(n uint32, dst []byte) error {
 			clear(dst)
 			return nil
 		}
-		if _, err := r.src.ReadAt(dst, int64(e.Offset)); err != nil {
+		if err := format.ReadFullAt(r.src, dst, int64(e.Offset)); err != nil {
 			return fmt.Errorf("%w: hunk %d: %v", chderr.CorruptData, n, err)
 		}
 	default: // CompParent: parents are not supported
@@ -323,7 +312,7 @@ func (r *Reader) decompress(e format.MapEntry, dst []byte) error {
 		*buf = make([]byte, e.CompLen)
 	}
 	src := (*buf)[:e.CompLen]
-	if _, err := r.src.ReadAt(src, int64(e.Offset)); err != nil {
+	if err := format.ReadFullAt(r.src, src, int64(e.Offset)); err != nil {
 		return fmt.Errorf("%w: reading stored data: %v", chderr.CorruptData, err)
 	}
 
