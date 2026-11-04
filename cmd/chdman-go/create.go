@@ -45,7 +45,7 @@ func runCreate(name string, create createFunc, ctx context.Context, args []strin
 	}
 	cb, finish := progress(stderr, "Compressing")
 	res, err := create(ctx, in, out, chdman.CreateOptions{
-		Codecs: splitCodecs(codecs), HunkBytes: uint32(hunk), Workers: workers, Force: force, Progress: cb,
+		Codecs: splitCodecs(codecs, fs.given("c", "compression")), HunkBytes: uint32(hunk), Workers: workers, Force: force, Progress: cb,
 	})
 	finish()
 	printWarnings(stderr, res.Warnings)

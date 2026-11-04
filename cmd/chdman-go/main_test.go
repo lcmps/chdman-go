@@ -233,3 +233,19 @@ func TestSignalsCancel(t *testing.T) {
 		})
 	}
 }
+
+// chdman rejects an empty -c, and reads only the first four names of a longer
+// one.
+func TestCompressionOption(t *testing.T) {
+	dir := t.TempDir()
+	cue := makeDiscCue(t, dir)
+	out := filepath.Join(dir, "o.chd")
+	if _, errOut := wantCode(t, 1, "createcd", "-i", cue, "-o", out, "-c", ""); !strings.Contains(errOut, "invalid compressor") {
+		t.Errorf("empty -c: stderr %q", errOut)
+	}
+	if _, err := os.Stat(out); err == nil {
+		t.Error("empty -c left an output")
+	}
+	wantCode(t, 0, "createcd", "-i", cue, "-o", out, "-c", "cdzl,cdlz,cdfl,cdzs,cdzl")
+	wantCode(t, 0, "createcd", "-f", "-i", cue, "-o", out, "-c", "cdzl,cdlz,cdfl,cdzs,bogus")
+}

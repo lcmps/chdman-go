@@ -376,6 +376,9 @@ func TestParseCodecs(t *testing.T) {
 		{[]string{"lzma", "zlib", "huff", "flac"}, [4]format.CodecTag{l, z, format.CodecHuffman, format.CodecFLAC}},
 		{[]string{"cdlz", "cdzl", "cdfl", "cdzs"}, [4]format.CodecTag{format.CodecCDLZMA, format.CodecCDZlib, format.CodecCDFLAC, format.CodecCDZstd}},
 		{[]string{"none"}, [4]format.CodecTag{}},
+		// chdman reads the first four names and never looks at the rest.
+		{[]string{"lzma", "zlib", "huff", "flac", "zstd"}, [4]format.CodecTag{l, z, format.CodecHuffman, format.CodecFLAC}},
+		{[]string{"lzma", "zlib", "huff", "flac", "not a codec", ""}, [4]format.CodecTag{l, z, format.CodecHuffman, format.CodecFLAC}},
 	}
 	defaults := [4]format.CodecTag{format.CodecHuffman}
 	for _, tc := range ok {
@@ -394,7 +397,7 @@ func TestParseCodecs(t *testing.T) {
 	}
 	bad := [][]string{
 		{"nope"}, {"zl"}, {""}, {"zlib", ""}, {"none", "zlib"}, {"zlib", "none"},
-		{"lzma", "zlib", "huff", "flac", "zstd"}, {"avhu"},
+		{"avhu"}, {"lzma", "zlib", "huff", "", "flac"},
 	}
 	for _, in := range bad {
 		if _, err := parseCodecs(in, defaults); err == nil {

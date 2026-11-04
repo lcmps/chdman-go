@@ -20,7 +20,9 @@ import (
 // defaults.
 type CreateOptions struct {
 	// Codecs lists up to four codec tags such as "lzma" and "zlib", or just
-	// "none" for an uncompressed CHD. Empty means the default for the media.
+	// "none" for an uncompressed CHD; further names are ignored, as chdman
+	// does. Nil or empty means the default for the media, so an empty name
+	// is a name that is not a codec.
 	Codecs []string
 	// HunkBytes is the hunk size; zero means the default for the media.
 	HunkBytes uint32
@@ -87,8 +89,9 @@ var codecTags = map[string]format.CodecTag{
 
 // parseCodecs converts the names in CreateOptions.Codecs to codec slots, like
 // parse_compression in chdman.cpp. No names selects defaults, and "none" as the
-// only name selects no compression. More than four names, or an unknown one,
-// is an error.
+// only name selects no compression. An unknown name, or an empty one, is an
+// error. Only the first four names are read: chdman stops there, so a fifth
+// is ignored without being checked.
 func parseCodecs(names []string, defaults [4]format.CodecTag) ([4]format.CodecTag, error) {
 	var tags [4]format.CodecTag
 	switch {
@@ -96,9 +99,8 @@ func parseCodecs(names []string, defaults [4]format.CodecTag) ([4]format.CodecTa
 		return defaults, nil
 	case len(names) == 1 && names[0] == "none":
 		return tags, nil
-	case len(names) > len(tags):
-		return tags, fmt.Errorf("chdman: %d codecs given, at most %d allowed", len(names), len(tags))
 	}
+	names = names[:min(len(names), len(tags))]
 	for i, name := range names {
 		tag, ok := codecTags[name]
 		switch {

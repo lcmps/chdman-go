@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -158,12 +159,23 @@ func fail(stderr io.Writer, err error) int {
 	return exitFailure
 }
 
-// splitCodecs splits the value of -c into codec names. Validation is the library's.
-func splitCodecs(s string) []string {
-	if s == "" {
+// splitCodecs splits the value of -c into codec names. Validation is the
+// library's. An option that was given but is empty is one empty name, which
+// chdman rejects, not a request for the defaults.
+func splitCodecs(s string, given bool) []string {
+	if !given {
 		return nil
 	}
 	return strings.Split(s, ",")
+}
+
+// given reports whether any of the named options was on the command line.
+func (f *flags) given(names ...string) bool {
+	var found bool
+	f.Visit(func(fl *flag.Flag) {
+		found = found || slices.Contains(names, fl.Name)
+	})
+	return found
 }
 
 // progress returns a progress callback and a function that ends the progress
