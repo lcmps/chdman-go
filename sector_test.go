@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -355,6 +356,28 @@ func TestFilesystemReachable(t *testing.T) {
 		}})
 		check(t, openT(t, chd))
 	})
+	// The filesystem is on the first track, and later tracks, a pregap, a
+	// stored index 0 and padding frames come after it. Each shape is also
+	// built with one bin per track.
+	audio := func(frames int, o ...func(*testimg.Track)) testimg.Track {
+		tr := testimg.Track{Mode: "AUDIO", Frames: frames, Shape: testimg.Mixed}
+		for _, f := range o {
+			f(&tr)
+		}
+		return tr
+	}
+	for _, mode := range []string{"MODE1/2048", "MODE1/2352", "MODE2/2336", "MODE2/2352"} {
+		for _, split := range []bool{false, true} {
+			t.Run(fmt.Sprintf("CD-%s-multitrack/split=%v", strings.ReplaceAll(mode, "/", "-"), split), func(t *testing.T) {
+				_, chd := makeCDChd(t, testimg.Disc{Split: split, Tracks: []testimg.Track{
+					{Mode: mode, Frames: sectors + 8, Shape: testimg.Zeros, Data: img},
+					audio(90, func(tr *testimg.Track) { tr.IndexZero = 15 }),
+					audio(91, func(tr *testimg.Track) { tr.Pregap = 15 }),
+				}})
+				check(t, openT(t, chd))
+			})
+		}
+	}
 	t.Run("DVD", func(t *testing.T) {
 		dir := t.TempDir()
 		iso := testimg.WriteISO(t, dir, img)
