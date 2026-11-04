@@ -413,6 +413,9 @@ func TestCreateCDPreviousTrackSizeWraps(t *testing.T) {
 	if testing.Short() {
 		t.Skip("reads 5 GiB")
 	}
+	if raceEnabled {
+		t.Skip("takes minutes under the race detector, and the plain pass runs it")
+	}
 	oracle.Require(t)
 	dir := t.TempDir()
 	f, err := os.Create(filepath.Join(dir, "a.bin"))

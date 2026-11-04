@@ -221,6 +221,9 @@ func TestCreateDVDOver4GiB(t *testing.T) {
 	if testing.Short() {
 		t.Skip("writes a 5 GiB sparse file")
 	}
+	if raceEnabled {
+		t.Skip("takes minutes under the race detector, and the plain pass runs it")
+	}
 	oracle.Require(t)
 	start := time.Now()
 	dir := t.TempDir()
