@@ -37,9 +37,11 @@ type MetadataEntry struct {
 
 // ReadMetadata walks the metadata chain starting at h.MetaOffset. It returns
 // an error wrapping chderr.CorruptData for a chain that loops, or that
-// points past the end of the file.
-func ReadMetadata(r io.ReaderAt, h Header) ([]MetadataEntry, error) {
+// points past the end of the file, and whose entries together claim more
+// bytes than fileSize, which only overlapping entries can do.
+func ReadMetadata(r io.ReaderAt, h Header, fileSize int64) ([]MetadataEntry, error) {
 	var entries []MetadataEntry
+	var total int64
 	seen := map[uint64]bool{}
 	for off := h.MetaOffset; off != 0; {
 		if seen[off] {
@@ -59,6 +61,9 @@ func ReadMetadata(r io.ReaderAt, h Header) ([]MetadataEntry, error) {
 		// force a large allocation on a short file.
 		var buf bytes.Buffer
 		n := int64(lenFlags & 0xffffff)
+		if total += metadataHeaderSize + n; total > fileSize {
+			return nil, fmt.Errorf("%w: metadata entries total %d bytes in a %d byte file", chderr.CorruptData, total, fileSize)
+		}
 		if _, err := io.CopyN(&buf, io.NewSectionReader(r, int64(off)+metadataHeaderSize, n), n); err != nil {
 			return nil, fmt.Errorf("%w: metadata data at %d: %v", chderr.CorruptData, off, err)
 		}

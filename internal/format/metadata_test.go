@@ -3,9 +3,11 @@ package format
 import (
 	"bytes"
 	"crypto/sha1"
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/lcmps/chdman-go/internal/chderr"
@@ -19,7 +21,7 @@ func readMeta(t *testing.T, b []byte) (Header, []MetadataEntry) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta, err := ReadMetadata(bytes.NewReader(b), h)
+	meta, err := ReadMetadata(bytes.NewReader(b), h, int64(len(b)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +78,7 @@ func TestMarshalMetadataRoundTrip(t *testing.T) {
 	ab := MarshalMetadata(a, first+uint64(16+len(a.Data)))
 	cb := MarshalMetadata(c, 0)
 	file := append(make([]byte, HeaderSize), append(ab, cb...)...)
-	got, err := ReadMetadata(bytes.NewReader(file), Header{MetaOffset: first})
+	got, err := ReadMetadata(bytes.NewReader(file), Header{MetaOffset: first}, int64(len(file)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,16 +95,41 @@ func TestReadMetadataRejects(t *testing.T) {
 	prefix := make([]byte, HeaderSize)
 
 	loop := append(bytes.Clone(prefix), MarshalMetadata(e, HeaderSize)...) // points at itself
-	if _, err := ReadMetadata(bytes.NewReader(loop), Header{MetaOffset: HeaderSize}); !errors.Is(err, chderr.CorruptData) {
+	if _, err := ReadMetadata(bytes.NewReader(loop), Header{MetaOffset: HeaderSize}, int64(len(loop))); !errors.Is(err, chderr.CorruptData) {
 		t.Errorf("loop: err = %v, want CorruptData", err)
 	}
 	past := append(bytes.Clone(prefix), MarshalMetadata(e, 1<<40)...)
-	if _, err := ReadMetadata(bytes.NewReader(past), Header{MetaOffset: HeaderSize}); !errors.Is(err, chderr.CorruptData) {
+	if _, err := ReadMetadata(bytes.NewReader(past), Header{MetaOffset: HeaderSize}, int64(len(past))); !errors.Is(err, chderr.CorruptData) {
 		t.Errorf("next past end: err = %v, want CorruptData", err)
 	}
 	trunc := append(bytes.Clone(prefix), MarshalMetadata(MetadataEntry{Tag: TagDVD, Data: make([]byte, 100)}, 0)[:50]...)
-	if _, err := ReadMetadata(bytes.NewReader(trunc), Header{MetaOffset: HeaderSize}); !errors.Is(err, chderr.CorruptData) {
+	if _, err := ReadMetadata(bytes.NewReader(trunc), Header{MetaOffset: HeaderSize}, int64(len(trunc))); !errors.Is(err, chderr.CorruptData) {
 		t.Errorf("truncated data: err = %v, want CorruptData", err)
+	}
+}
+
+func TestReadMetadataRejectsOverlappingEntries(t *testing.T) {
+	// Every entry claims 16 MiB of data but starts only 16 bytes after the
+	// previous one, so the claims overlap and sum to far more than the file.
+	const entries = 60
+	file := make([]byte, HeaderSize+1<<24+entries*16)
+	for i := range entries {
+		off := HeaderSize + 16*i
+		binary.BigEndian.PutUint32(file[off:], TagDVD)
+		binary.BigEndian.PutUint32(file[off+4:], 0xffffff)
+		binary.BigEndian.PutUint64(file[off+8:], uint64(off+16))
+	}
+	binary.BigEndian.PutUint64(file[HeaderSize+16*(entries-1)+8:], 0)
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := ReadMetadata(bytes.NewReader(file), Header{MetaOffset: HeaderSize}, int64(len(file)))
+	runtime.ReadMemStats(&after)
+	if !errors.Is(err, chderr.CorruptData) {
+		t.Fatalf("err = %v, want CorruptData", err)
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 128<<20 {
+		t.Errorf("allocated %d MiB before rejecting", grew>>20)
 	}
 }
 
