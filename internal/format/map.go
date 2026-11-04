@@ -193,7 +193,7 @@ func readUncompressedMap(r io.ReaderAt, h Header, fileSize int64) (*Map, error) 
 	}
 	raw := make([]byte, count*4)
 	if err := ReadFullAt(r, raw, int64(h.MapOffset)); err != nil {
-		return nil, corrupt("reading map: %v", err)
+		return nil, ReadError("reading map", err)
 	}
 	m := &Map{runs: make([]mapRun, 0, count)}
 	for i := range count {
@@ -224,7 +224,7 @@ func readCompressedMap(r io.ReaderAt, h Header, fileSize int64) (*Map, error) {
 		return nil, corrupt("map header is past the end of the file")
 	}
 	if err := ReadFullAt(r, hdr[:], int64(h.MapOffset)); err != nil {
-		return nil, corrupt("reading map header: %v", err)
+		return nil, ReadError("reading map header", err)
 	}
 	mapBytes := binary.BigEndian.Uint32(hdr[0:])
 	firstOffset := binary.BigEndian.Uint64(hdr[2:]) & (1<<48 - 1)
@@ -246,7 +246,7 @@ func readCompressedMap(r io.ReaderAt, h Header, fileSize int64) (*Map, error) {
 	}
 	body := make([]byte, mapBytes)
 	if err := ReadFullAt(r, body, int64(h.MapOffset)+mapHeaderSize); err != nil {
-		return nil, corrupt("reading map: %v", err)
+		return nil, ReadError("reading map", err)
 	}
 	br := bitstream.NewReader(body)
 	dec := huffman.New(mapTreeCodes, mapTreeBits)

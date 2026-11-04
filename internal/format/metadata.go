@@ -56,7 +56,7 @@ func ReadMetadata(r io.ReaderAt, h Header, fileSize int64) ([]MetadataEntry, err
 			return nil, fmt.Errorf("%w: metadata offset %d", chderr.CorruptData, off)
 		}
 		if err := ReadFullAt(r, hdr[:], int64(off)); err != nil {
-			return nil, fmt.Errorf("%w: metadata header at %d: %v", chderr.CorruptData, off, err)
+			return nil, ReadError(fmt.Sprintf("metadata header at %d", off), err)
 		}
 		lenFlags := binary.BigEndian.Uint32(hdr[4:])
 		e := MetadataEntry{Tag: binary.BigEndian.Uint32(hdr[:]), Flags: uint8(lenFlags >> 24)}
@@ -68,7 +68,7 @@ func ReadMetadata(r io.ReaderAt, h Header, fileSize int64) ([]MetadataEntry, err
 			return nil, fmt.Errorf("%w: metadata entries total %d bytes in a %d byte file", chderr.CorruptData, total, fileSize)
 		}
 		if _, err := io.CopyN(&buf, io.NewSectionReader(r, int64(off)+metadataHeaderSize, n), n); err != nil {
-			return nil, fmt.Errorf("%w: metadata data at %d: %v", chderr.CorruptData, off, err)
+			return nil, ReadError(fmt.Sprintf("metadata data at %d", off), err)
 		}
 		e.Data = buf.Bytes()
 		entries = append(entries, e)

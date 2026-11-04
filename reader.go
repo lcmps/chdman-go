@@ -130,7 +130,7 @@ func NewReader(src io.ReaderAt, size int64) (*Reader, error) {
 	}
 	var raw [format.HeaderSize]byte
 	if err := format.ReadFullAt(src, raw[:], 0); err != nil {
-		return nil, fmt.Errorf("%w: reading header: %v", chderr.CorruptData, err)
+		return nil, format.ReadError("reading header", err)
 	}
 	hdr, err := format.ParseHeader(raw[:])
 	if err != nil {
@@ -296,7 +296,7 @@ func (r *Reader) decodeHunk(n uint32, dst []byte) error {
 			return nil
 		}
 		if err := format.ReadFullAt(r.src, dst, int64(e.Offset)); err != nil {
-			return fmt.Errorf("%w: hunk %d: %v", chderr.CorruptData, n, err)
+			return format.ReadError(fmt.Sprintf("hunk %d", n), err)
 		}
 	default: // CompParent: parents are not supported
 		return fmt.Errorf("%w: hunk %d has map type %d", chderr.CorruptData, n, e.Type)
@@ -321,7 +321,7 @@ func (r *Reader) decompress(e format.MapEntry, dst []byte) error {
 	}
 	src := (*buf)[:e.CompLen]
 	if err := format.ReadFullAt(r.src, src, int64(e.Offset)); err != nil {
-		return fmt.Errorf("%w: reading stored data: %v", chderr.CorruptData, err)
+		return format.ReadError("reading stored data", err)
 	}
 
 	pool := &r.decoders[e.Type]
