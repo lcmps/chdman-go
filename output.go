@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 )
 
@@ -32,43 +33,94 @@ func createTemp(path string) (*os.File, error) {
 // same file as one of inputs, even through a symlink or a hard link. Forcing
 // over a regular file keeps its permissions; forcing over a symlink replaces
 // the link itself and leaves its target alone.
-func writeOutputAtomically(ctx context.Context, path string, force bool, inputs []string, fn func(f *os.File) error) (err error) {
+func writeOutputAtomically(ctx context.Context, path string, force bool, inputs []string, fn func(f *os.File) error) error {
+	return writeOutputsAtomically(ctx, []string{path}, force, inputs, func(files []*os.File) error {
+		return fn(files[0])
+	})
+}
+
+// writeOutputsAtomically is writeOutputAtomically for several files that
+// belong together. Every path is checked before any work starts, fn gets one
+// temporary file per path, in order, and the files are renamed into place
+// together at the end, last path first. If a rename fails, the files already
+// renamed that did not exist before are removed again; one that replaced an
+// old file cannot be undone. The paths must be distinct files.
+func writeOutputsAtomically(ctx context.Context, paths []string, force bool, inputs []string, fn func(files []*os.File) error) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := checkOutput(path, force, inputs); err != nil {
-		return err
+	for i, path := range paths {
+		if slices.ContainsFunc(paths[:i], func(p string) bool { return filepath.Clean(p) == filepath.Clean(path) }) {
+			return fmt.Errorf("chdman: %s is named as two outputs", path)
+		}
+		if err := checkOutput(path, force, inputs); err != nil {
+			return err
+		}
+		// Existing outputs that are one file would write over each other.
+		a, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		for _, other := range paths[:i] {
+			if b, err := os.Stat(other); err == nil && os.SameFile(a, b) {
+				return fmt.Errorf("chdman: outputs %s and %s are the same file", other, path)
+			}
+		}
 	}
-	tmp, err := createTemp(path)
-	if err != nil {
-		return err
-	}
+
+	tmps := make([]*os.File, 0, len(paths))
 	defer func() {
 		if err != nil {
-			tmp.Close()
-			os.Remove(tmp.Name())
+			for _, tmp := range tmps {
+				tmp.Close()
+				os.Remove(tmp.Name())
+			}
 		}
 	}()
-	if err := fn(tmp); err != nil {
+	for _, path := range paths {
+		tmp, err := createTemp(path)
+		if err != nil {
+			return err
+		}
+		tmps = append(tmps, tmp)
+	}
+	if err := fn(tmps); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if old, err := os.Lstat(path); err == nil && old.Mode().IsRegular() {
-		// A replaced file keeps its permissions. A symlink is replaced by the
-		// new file, not written through, so it has none to keep.
-		if err := tmp.Chmod(old.Mode().Perm()); err != nil {
+	existed := make([]bool, len(paths))
+	for i, path := range paths {
+		tmp := tmps[i]
+		if old, err := os.Lstat(path); err == nil {
+			existed[i] = true
+			// A replaced file keeps its permissions. A symlink is replaced by
+			// the new file, not written through, so it has none to keep.
+			if old.Mode().IsRegular() {
+				if err := tmp.Chmod(old.Mode().Perm()); err != nil {
+					return err
+				}
+			}
+		}
+		if err := tmp.Sync(); err != nil {
+			return err
+		}
+		if err := tmp.Close(); err != nil {
 			return err
 		}
 	}
-	if err := tmp.Sync(); err != nil {
-		return err
+	for i := len(paths) - 1; i >= 0; i-- {
+		if err := os.Rename(tmps[i].Name(), paths[i]); err != nil {
+			for j := i + 1; j < len(paths); j++ {
+				if !existed[j] {
+					os.Remove(paths[j])
+				}
+			}
+			return err
+		}
 	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return nil
 }
 
 // checkOutput rejects an output that exists without force, or that is one of
