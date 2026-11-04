@@ -40,11 +40,12 @@ func (s VerifyStatus) String() string {
 
 // VerifyOptions tunes Verify.
 type VerifyOptions struct {
-	// Workers is the number of hunks decompressed in parallel; zero or less
-	// means one. The result never depends on it.
+	// Workers is the number of hunks decompressed in parallel; zero means one
+	// per CPU. The result never depends on it.
 	Workers int
 	// Progress, if set, is called after each hunk with the logical bytes
-	// hashed so far and the total. It runs on a single goroutine.
+	// hashed so far and the total. It runs on a single goroutine of the
+	// library, not the caller's, and must not panic.
 	Progress func(done, total uint64)
 }
 
@@ -80,7 +81,7 @@ func (r *Reader) Verify(ctx context.Context, opts VerifyOptions) (VerifyResult, 
 	}
 	hash := sha1.New()
 	remaining, total := r.hdr.LogicalBytes, r.hdr.LogicalBytes
-	err := pipeline.Ordered(ctx, opts.Workers,
+	err := pipeline.Ordered(ctx, workerCount(opts.Workers),
 		func(yield func(uint32) bool) error {
 			for n := range r.entries.Len() {
 				if !yield(n) {
