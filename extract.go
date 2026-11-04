@@ -28,8 +28,9 @@ type ExtractOptions struct {
 	// itself is replaced and its target is left untouched.
 	Force bool
 	// Progress, if set, is called as output bytes are written.
-	// The callback runs on a goroutine of the library, not the caller's, and
-	// must not panic.
+	// The callback runs on a goroutine of the library, not the caller's. If it
+	// panics, the work stops, temporary files are removed and the panic is
+	// raised again in the caller's goroutine.
 	Progress func(done, total uint64)
 }
 

@@ -45,7 +45,8 @@ type VerifyOptions struct {
 	Workers int
 	// Progress, if set, is called after each hunk with the logical bytes
 	// hashed so far and the total. It runs on a single goroutine of the
-	// library, not the caller's, and must not panic.
+	// library, not the caller's. If it panics, the work stops and the panic is
+	// raised again in the caller's goroutine.
 	Progress func(done, total uint64)
 }
 
