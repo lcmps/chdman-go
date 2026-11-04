@@ -28,6 +28,10 @@ const (
 	Mixed
 )
 
+// RepeatBlock is the number of sectors after which the Repeated shape
+// starts over.
+const RepeatBlock = 64
+
 const (
 	isoSector = 2048
 	rawSector = cdrom.SectorSize
@@ -141,7 +145,14 @@ func sector(t testing.TB, tr Track, i, lba int) []byte {
 	}
 	s := make([]byte, rawSector)
 	copy(s, []byte{0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00})
-	m, sec, f := lbaToMSF(lba + 150)
+	// Repeated sectors deliberately share a header: the MSF address wraps
+	// every RepeatBlock frames, so the whole raw sector (and its ECC)
+	// repeats and chdman can emit self-references.
+	hdrLBA := lba
+	if tr.Shape == Repeated {
+		hdrLBA = lba % RepeatBlock
+	}
+	m, sec, f := lbaToMSF(hdrLBA + 150)
 	s[12], s[13], s[14], s[15] = bcd(m), bcd(sec), bcd(f), mode
 	copy(s[16:16+isoSector], payload(tr.Shape, lba, isoSector))
 	cdrom.ECCGenerate(s)
@@ -166,7 +177,9 @@ func payload(s Shape, idx, size int) []byte {
 			b[i] = byte(rng.Uint32())
 		}
 	case Repeated:
-		pat := []byte{0xde, 0xad, 0xbe, 0xef, byte(idx)}
+		// A block of RepeatBlock sectors repeated verbatim, so whole hunks
+		// recur at any hunk size that divides the block.
+		pat := []byte{0xde, 0xad, 0xbe, 0xef, byte(idx % RepeatBlock)}
 		copy(b, bytes.Repeat(pat, size/len(pat)+1))
 	}
 	return b

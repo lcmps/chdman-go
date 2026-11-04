@@ -34,11 +34,16 @@ func makeDVD(t testing.TB, shape testimg.Shape, sectors int, codecs string, hunk
 
 func makeCD(t testing.TB, codecs string) string {
 	t.Helper()
+	return makeCDShape(t, codecs, testimg.Mixed, 60)
+}
+
+func makeCDShape(t testing.TB, codecs string, shape testimg.Shape, frames int) string {
+	t.Helper()
 	oracle.Require(t)
 	dir := t.TempDir()
 	cue := testimg.Cue(t, dir, testimg.Disc{Tracks: []testimg.Track{
-		{Mode: "MODE1/2352", Frames: 60, Shape: testimg.Mixed},
-		{Mode: "AUDIO", Frames: 40, Pregap: 150, Shape: testimg.Mixed},
+		{Mode: "MODE1/2352", Frames: frames, Shape: shape},
+		{Mode: "AUDIO", Frames: 40, Pregap: 150, Shape: shape},
 	}})
 	chd := filepath.Join(dir, "out.chd")
 	oracle.CreateCD(t, cue, chd, codecs, 0)
@@ -115,20 +120,34 @@ func TestReadAtCD(t *testing.T) {
 }
 
 func TestSelfReferences(t *testing.T) {
-	chd, iso := makeDVD(t, testimg.Zeros, 200, "zlib", 4096)
-	r := openT(t, chd)
-	self := 0
-	for _, e := range r.entries {
-		if e.Type == format.CompSelf {
-			self++
+	hasSelf := func(r *Reader) bool {
+		for _, e := range r.entries {
+			if e.Type == format.CompSelf {
+				return true
+			}
 		}
+		return false
 	}
-	if self == 0 {
-		t.Fatal("the map has no CompSelf entries")
-	}
-	if !bytes.Equal(readAll(t, r), iso) {
-		t.Fatal("content differs from the ISO")
-	}
+	t.Run("dvd", func(t *testing.T) {
+		chd, iso := makeDVD(t, testimg.Repeated, 512, "", 0) // default hunk size
+		r := openT(t, chd)
+		if !hasSelf(r) {
+			t.Fatal("the map has no CompSelf entries")
+		}
+		if !bytes.Equal(readAll(t, r), iso) {
+			t.Fatal("content differs from the ISO")
+		}
+	})
+	t.Run("cd", func(t *testing.T) {
+		r := openT(t, makeCDShape(t, "", testimg.Repeated, 400))
+		if !hasSelf(r) {
+			t.Fatal("the map has no CompSelf entries")
+		}
+		sum := sha1.Sum(readAll(t, r))
+		if got := hex.EncodeToString(sum[:]); got != r.Info().RawSHA1 {
+			t.Fatalf("content SHA-1 %s, rawsha1 %s", got, r.Info().RawSHA1)
+		}
+	})
 }
 
 // storedHunk returns the file offset of a hunk that holds incompressible data.
