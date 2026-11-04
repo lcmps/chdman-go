@@ -34,7 +34,11 @@ type zstdDecompressor struct {
 }
 
 func newZstdDecompressor() (*zstdDecompressor, error) {
-	dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+	dec, err := zstd.NewReader(nil,
+		zstd.WithDecoderConcurrency(1),
+		// Cap output at the destination so a frame header cannot drive allocation.
+		zstd.WithDecodeAllCapLimit(true),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +46,7 @@ func newZstdDecompressor() (*zstdDecompressor, error) {
 }
 
 func (d *zstdDecompressor) Decompress(dst, src []byte) error {
-	out, err := d.dec.DecodeAll(src, dst[:0])
+	out, err := d.dec.DecodeAll(src, dst[:0:len(dst)])
 	if err != nil {
 		return fmt.Errorf("%w: zstd: %v", chderr.CorruptData, err)
 	}
