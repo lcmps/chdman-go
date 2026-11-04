@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/lcmps/chdman-go/internal/cdrom"
 	"github.com/lcmps/chdman-go/internal/chderr"
 	"github.com/lcmps/chdman-go/internal/chdwriter"
 	"github.com/lcmps/chdman-go/internal/format"
@@ -494,4 +497,36 @@ func TestExtractCDUppercaseExtension(t *testing.T) {
 	}
 	oracle.ExtractCD(t, chd, filepath.Join(theirs, "A.CUE"), true)
 	assertSameOutput(t, ours, theirs)
+}
+
+// A CHD can claim a disc of billions of frames. The list of work for it must
+// not be built up front: at about 24 bytes per megabyte that is gigabytes.
+func TestCopyTracksPlansLazily(t *testing.T) {
+	_, chd := makeCDChd(t, testimg.Layouts()[1].Disc)
+	r, err := Open(chd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	toc, err := cdrom.ParseMetadata(r.meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toc.Tracks[0].Frames = math.MaxUint32 // 9 TB of sectors
+	out, err := os.Create(filepath.Join(t.TempDir(), "o.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	err = copyTracks(context.Background(), r, toc, cdPlan{trackBin: []int{0}}, []*os.File{out}, 2, nil)
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("copying more than the CHD holds succeeded")
+	}
+	if got := after.TotalAlloc - before.TotalAlloc; got > 64<<20 {
+		t.Errorf("allocated %d MiB before failing", got>>20)
+	}
 }

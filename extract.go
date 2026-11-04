@@ -272,13 +272,8 @@ type cdChunk struct {
 // only the track's data size is kept, so subcode and padding frames drop out,
 // and audio is byte-swapped back to the order bin/cue uses.
 func copyTracks(ctx context.Context, r *Reader, toc cdrom.TOC, plan cdPlan, bins []*os.File, workers int, progress func(done, total uint64)) error {
-	var chunks []cdChunk
 	var total uint64
-	for i, t := range toc.Tracks {
-		per := uint32(max(1, extractChunkBytes/t.DataSize))
-		for first := uint32(0); first < t.Frames; first += per {
-			chunks = append(chunks, cdChunk{plan.trackBin[i], i, first, min(per, t.Frames-first)})
-		}
+	for _, t := range toc.Tracks {
 		total += uint64(t.Frames) * uint64(t.DataSize)
 	}
 
@@ -289,10 +284,15 @@ func copyTracks(ctx context.Context, r *Reader, toc cdrom.TOC, plan cdPlan, bins
 	}
 	var pool sync.Pool
 	pool.New = func() any { b := make([]byte, extractChunkBytes); return &b }
+	// The chunks are made as they are needed: a crafted CHD can claim a disc
+	// of billions of frames.
 	offsets := func(yield func(cdChunk) bool) error {
-		for _, c := range chunks {
-			if !yield(c) {
-				return nil
+		for i, t := range toc.Tracks {
+			per := uint32(max(1, extractChunkBytes/t.DataSize))
+			for first := uint64(0); first < uint64(t.Frames); first += uint64(per) {
+				if !yield(cdChunk{plan.trackBin[i], i, uint32(first), min(per, t.Frames-uint32(first))}) {
+					return nil
+				}
 			}
 		}
 		return nil
