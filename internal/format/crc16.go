@@ -1,7 +1,5 @@
 package format
 
-import "io"
-
 var crc16Table = func() (t [256]uint16) {
 	for i := range t {
 		crc := uint16(i) << 8
@@ -33,17 +31,3 @@ func crc16Update(crc uint16, b []byte) uint16 {
 //
 // Matches MAME's crc16_creator (BSD-3-Clause); see NOTICE.
 func CRC16(b []byte) uint16 { return crc16Update(crc16Init, b) }
-
-// ReadFullAt fills p from r at off. Unlike a bare ReadAt error check, it
-// accepts a conforming reader that returns len(p) bytes together with io.EOF
-// at the end of its input.
-func ReadFullAt(r io.ReaderAt, p []byte, off int64) error {
-	n, err := r.ReadAt(p, off)
-	if n == len(p) {
-		return nil
-	}
-	if err == nil {
-		err = io.ErrUnexpectedEOF
-	}
-	return err
-}
