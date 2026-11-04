@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/lcmps/chdman-go/internal/testsupport/testimg"
 )
@@ -206,5 +208,28 @@ func TestRefusesRejectedCommands(t *testing.T) {
 				t.Errorf("%s: stderr lacks %q: %q", c, name, errOut)
 			}
 		}
+	}
+}
+
+// timeout, systemd and kill all stop a process with SIGTERM, and a run that
+// is cancelled removes its temporary files, so SIGTERM must cancel like ^C.
+func TestSignalsCancel(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT} {
+		t.Run(sig.String(), func(t *testing.T) {
+			ctx, stop := notifyContext(context.Background())
+			defer stop()
+			p, err := os.FindProcess(os.Getpid())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.Signal(sig); err != nil {
+				t.Skipf("cannot send %v: %v", sig, err)
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(5 * time.Second):
+				t.Fatalf("%v did not cancel the context", sig)
+			}
+		})
 	}
 }

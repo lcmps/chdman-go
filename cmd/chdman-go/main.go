@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // Exit codes.
@@ -46,8 +47,15 @@ var commands = map[string]command{
 	"info":       runInfo,
 }
 
+// notifyContext returns a context that ends when the process is asked to stop,
+// with ^C or SIGTERM. A cancelled run removes its temporary files; the
+// default action of a signal would leave them.
+func notifyContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+}
+
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := notifyContext(context.Background())
 	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
