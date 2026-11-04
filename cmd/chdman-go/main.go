@@ -49,10 +49,10 @@ var commands = map[string]command{
 }
 
 // notifyContext returns a context that ends when the process is asked to stop,
-// with ^C or SIGTERM. A cancelled run removes its temporary files; the
+// with ^C, SIGTERM or SIGHUP (a closed terminal or a lost SSH session). A cancelled run removes its temporary files; the
 // default action of a signal would leave them.
 func notifyContext(parent context.Context) (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 }
 
 func main() {

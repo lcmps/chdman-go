@@ -251,9 +251,10 @@ func TestRefusesRejectedCommands(t *testing.T) {
 }
 
 // timeout, systemd and kill all stop a process with SIGTERM, and a run that
-// is cancelled removes its temporary files, so SIGTERM must cancel like ^C.
+// is cancelled removes its temporary files, so SIGTERM must cancel like ^C. So
+// must SIGHUP, which a closed terminal or a lost SSH session sends.
 func TestSignalsCancel(t *testing.T) {
-	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT} {
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP} {
 		t.Run(sig.String(), func(t *testing.T) {
 			ctx, stop := notifyContext(context.Background())
 			defer stop()
