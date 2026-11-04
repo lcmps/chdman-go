@@ -125,3 +125,25 @@ func TestTruncatedFilesAreCorrupt(t *testing.T) {
 		}
 	}
 }
+
+// Info hands out copies: editing them must not change what Verify hashes.
+func TestInfoReturnsCopies(t *testing.T) {
+	chd, _ := makeDVD(t, testimg.Mixed, 64, "", 4096)
+	r := openT(t, chd)
+	info := r.Info()
+	if len(info.Metadata) == 0 || len(info.Metadata[0].Data) == 0 || len(info.Codecs) == 0 {
+		t.Fatalf("Info has no metadata or codecs: %+v", info)
+	}
+	want := string(info.Metadata[0].Data)
+	for i := range info.Metadata[0].Data {
+		info.Metadata[0].Data[i] ^= 0xff
+	}
+	info.Metadata[0].Tag = "XXXX"
+	info.Codecs[0] = "xxxx"
+	if got := r.Info(); string(got.Metadata[0].Data) != want || got.Metadata[0].Tag == "XXXX" || got.Codecs[0] == "xxxx" {
+		t.Errorf("editing Info changed the Reader's: %+v", got)
+	}
+	if res, err := r.Verify(context.Background(), VerifyOptions{}); err != nil || res.Status != VerifyOK {
+		t.Errorf("Verify after editing Info = %v, %v", res.Status, err)
+	}
+}

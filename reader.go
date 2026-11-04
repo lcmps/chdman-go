@@ -1,5 +1,9 @@
 package chdman
 
+// Hunk decoding and map resolution follow read_hunk in MAME's
+// src/lib/util/chd.cpp (BSD-3-Clause, copyright Aaron Giles and contributors);
+// see NOTICE.
+
 import (
 	"container/list"
 	"encoding/hex"
@@ -7,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sync"
 
 	"github.com/lcmps/chdman-go/internal/cdrom"
@@ -206,8 +211,17 @@ func discType(tag uint32) DiscType {
 	return DiscUnknown
 }
 
-// Info describes the CHD. The result must not be modified.
-func (r *Reader) Info() Info { return r.info }
+// Info describes the CHD. The slices in the result are copies, so changing
+// them does not affect the Reader.
+func (r *Reader) Info() Info {
+	info := r.info
+	info.Codecs = slices.Clone(info.Codecs)
+	info.Metadata = slices.Clone(info.Metadata)
+	for i := range info.Metadata {
+		info.Metadata[i].Data = slices.Clone(info.Metadata[i].Data)
+	}
+	return info
+}
 
 // Close releases the file opened by Open. It does nothing for a Reader made
 // by NewReader.
