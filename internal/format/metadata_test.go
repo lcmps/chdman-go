@@ -1,6 +1,8 @@
-package format
+package format_test
 
 import (
+	. "github.com/lcmps/chdman-go/internal/format"
+
 	"bytes"
 	"crypto/sha1"
 	"encoding/binary"
