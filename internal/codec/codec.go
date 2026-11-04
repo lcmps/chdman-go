@@ -36,6 +36,14 @@ func NewCompressor(t format.CodecTag, hunkBytes uint32) (Compressor, error) {
 		return huffCompressor{}, nil
 	case format.CodecFLAC:
 		return newFLACCompressor(hunkBytes), nil
+	case format.CodecCDZlib:
+		return newCDCompressor(format.CodecZlib, format.CodecZlib, hunkBytes)
+	case format.CodecCDZstd:
+		return newCDCompressor(format.CodecZstd, format.CodecZstd, hunkBytes)
+	case format.CodecCDLZMA:
+		return newCDCompressor(format.CodecLZMA, format.CodecZlib, hunkBytes)
+	case format.CodecCDFLAC:
+		return newCDFLACCompressor(hunkBytes)
 	}
 	return nil, fmt.Errorf("%w: %v", chderr.UnsupportedCodec, t)
 }
@@ -53,6 +61,14 @@ func NewDecompressor(t format.CodecTag, hunkBytes uint32) (Decompressor, error) 
 		return huffDecompressor{}, nil
 	case format.CodecFLAC:
 		return &flacDecompressor{}, nil
+	case format.CodecCDZlib:
+		return newCDDecompressor(format.CodecZlib, format.CodecZlib, hunkBytes)
+	case format.CodecCDZstd:
+		return newCDDecompressor(format.CodecZstd, format.CodecZstd, hunkBytes)
+	case format.CodecCDLZMA:
+		return newCDDecompressor(format.CodecLZMA, format.CodecZlib, hunkBytes)
+	case format.CodecCDFLAC:
+		return newCDFLACDecompressor(hunkBytes)
 	}
 	return nil, fmt.Errorf("%w: %v", chderr.UnsupportedCodec, t)
 }
