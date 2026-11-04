@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/lcmps/chdman-go/internal/cdrom"
 	"github.com/lcmps/chdman-go/internal/chderr"
 	"github.com/lcmps/chdman-go/internal/codec"
 	"github.com/lcmps/chdman-go/internal/format"
@@ -85,6 +86,10 @@ type Reader struct {
 
 	decoders [4]sync.Pool // codec.Decompressor per map slot
 	stored   sync.Pool    // *[]byte scratch for compressed hunk data
+
+	tocOnce sync.Once // guards toc and tocErr, filled by cdTOC
+	toc     cdrom.TOC
+	tocErr  error
 
 	mu    sync.Mutex
 	lru   *list.List // of *cachedHunk, most recent first
