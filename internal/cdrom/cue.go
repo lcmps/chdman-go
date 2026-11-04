@@ -348,16 +348,19 @@ func (p *cueParser) finish() (TOC, []TrackSource, []Warning, error) {
 			}
 			continue
 		}
+		// The arithmetic below is chdman's, in its types: ints for times and
+		// uint32 for frame counts and byte sizes. A lead-out that does not fit
+		// the tracks around it wraps, and chdman converts the cue anyway.
 		if in.leadout != -1 {
 			// A lead-out time in a multisession CD trims this track to the
 			// lead-out instead of the idx 0 of the next track.
-			end := in.leadout - in.idx[0]
+			end := int32(in.leadout) - int32(in.idx[0])
 			if t.Frames >= uint32(end) {
 				t.Frames = uint32(end)
 				if !last {
 					// The lead-out becomes the gap between it and the next
 					// track's pregap.
-					in.leadout = info[n+1].idx[0] - in.leadout
+					in.leadout = int(int32(info[n+1].idx[0]) - int32(in.leadout))
 				}
 			}
 		}
@@ -366,21 +369,11 @@ func (p *cueParser) finish() (TOC, []TrackSource, []Warning, error) {
 			// and the next track, DiscImageCreator img/cue files do not.
 			// chdman can only tell them apart by the extension.
 			if !strings.HasSuffix(strings.ToLower(info[n-1].fname), ".img") {
-				gap := uint32(info[n-1].leadout)
-				if gap > t.Frames || tracks[n-1].PadFrames+gap > tracks[n-1].Frames {
-					return TOC{}, nil, nil, invalid("lead-out of track %d does not fit its tracks", n)
-				}
+				gap := uint32(int32(info[n-1].leadout))
 				tracks[n-1].PadFrames += gap
 				t.Frames -= gap
-				in.offset += uint64(gap) * bps
-				if gap > 0 {
-					p.warnings = append(p.warnings, Warning{
-						Kind:  WarnFramesOverwritten,
-						Track: n,
-						Message: fmt.Sprintf("track %d: chdman replaces the last %d frames with zeros and skips %d frames at the start of track %d (REM LEAD-OUT in a single non-.img file)",
-							n, gap, gap, n+1),
-					})
-				}
+				in.offset += uint64(gap * uint32(bps))
+				p.gapWarning(n, gap, info[n-1].offset)
 			}
 		}
 	}
@@ -390,10 +383,50 @@ func (p *cueParser) finish() (TOC, []TrackSource, []Warning, error) {
 	for i := range toc.Tracks {
 		t := &toc.Tracks[i]
 		t.ExtraFrames = (t.Frames+TrackPadding-1)/TrackPadding*TrackPadding - t.Frames
-		srcs[i] = TrackSource{Path: info[i].fname, Offset: info[i].offset, Swap: info[i].swap, Frames: t.Frames - t.PadFrames, Pad: t.PadFrames}
+		read := framesRead(*t, info[i].offset)
+		srcs[i] = TrackSource{Path: info[i].fname, Offset: info[i].offset, Swap: info[i].swap, Frames: read, Pad: t.Frames - read}
 	}
 	setOffsets(toc.Tracks)
 	return toc, srcs, p.warnings, nil
+}
+
+// framesRead is how many of the frames of t, whose data starts at offset in
+// its bin, chdman reads from the bin; it writes zeros for the rest. It is
+// read_data's test of src_frame_start against pad_track_start, a uint64 that
+// is the end of the track less the pad frames, and underflows when the pad
+// is longer than the track's end. Then nothing is zeroed and every frame is
+// read, though the track says it is padded.
+func framesRead(t Track, offset uint64) uint32 {
+	bps := uint64(t.DataSize + t.SubSize)
+	padStart := offset + uint64(t.Frames)*bps - uint64(t.PadFrames)*bps
+	if padStart <= offset {
+		return 0
+	}
+	return uint32(min(uint64(t.Frames), (padStart-offset+bps-1)/bps))
+}
+
+// gapWarning reports what a lead-out gap does to track n-1 and track n, when
+// it does anything: chdman reads zeros over the end of track n-1 and skips the
+// start of track n.
+func (p *cueParser) gapWarning(n int, gap uint32, prevOffset uint64) {
+	prev := p.tracks[n-1]
+	zeroed := prev.Frames - framesRead(prev, prevOffset)
+	skipped := int32(gap)
+	if zeroed == 0 && skipped <= 0 {
+		return
+	}
+	var what []string
+	if zeroed > 0 {
+		what = append(what, fmt.Sprintf("replaces the last %d frames of track %d with zeros", zeroed, n))
+	}
+	if skipped > 0 {
+		what = append(what, fmt.Sprintf("skips %d frames at the start of track %d", skipped, n+1))
+	}
+	p.warnings = append(p.warnings, Warning{
+		Kind:    WarnFramesOverwritten,
+		Track:   n,
+		Message: fmt.Sprintf("track %d: chdman %s (REM LEAD-OUT in a single non-.img file)", n, strings.Join(what, " and ")),
+	})
 }
 
 // previousRawSize is the size in bytes that chdman takes track n-1 to have

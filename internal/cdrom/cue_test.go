@@ -642,3 +642,46 @@ func TestCuePreviousTrackSizeWraps(t *testing.T) {
 		t.Errorf("no %s warning for track 2: %+v", cdrom.WarnOffsetTruncated, warns)
 	}
 }
+
+// singleBinMultisession is a two-session single-bin cue with a lead-out time
+// on track 1, the shape that IsoBuster and ImgBurn write. The numbers are
+// chosen by the callers to break the assumptions that a gap fits its tracks:
+// chdman converts all of these, with its unsigned arithmetic wrapping.
+func singleBinMultisession(t *testing.T, ext string, frames int, leadOut, track2 string) string {
+	t.Helper()
+	dir := t.TempDir()
+	testimg.Bin(t, dir, "disc."+ext, testimg.Track{Mode: "MODE1/2352", Frames: frames, Shape: testimg.Mixed})
+	return testimg.WriteCue(t, dir, "s.cue", fmt.Sprintf(`FILE "disc.%s" BINARY
+REM SESSION 01
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+  REM LEAD-OUT %s
+REM SESSION 02
+  TRACK 02 MODE1/2352
+    INDEX 00 %[3]s
+    INDEX 01 %[3]s
+`, ext, leadOut, track2))
+}
+
+func TestCueMultisessionGapsThatDoNotFit(t *testing.T) {
+	oracle.Require(t)
+	for _, tc := range []struct {
+		name            string
+		frames          int
+		leadOut, track2 string
+	}{
+		// A first session of 75 frames with a gap of 675.
+		{"gap-larger-than-first-session", 2000, "00:01:00", "00:10:00"},
+		// A gap larger than what follows it.
+		{"gap-larger-than-next-track", 1200, "00:05:00", "00:15:00"},
+		// A lead-out time after the start of the next track.
+		{"lead-out-past-next-track", 2000, "00:10:00", "00:06:00"},
+		{"lead-out-at-next-track", 2000, "00:06:00", "00:06:00"},
+	} {
+		for _, ext := range []string{"bin", "img"} {
+			t.Run(tc.name+"/"+ext, func(t *testing.T) {
+				assertCueMatchesChdman(t, singleBinMultisession(t, ext, tc.frames, tc.leadOut, tc.track2))
+			})
+		}
+	}
+}

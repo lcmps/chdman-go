@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -401,5 +402,42 @@ func TestCreateCDPreviousTrackSizeWraps(t *testing.T) {
 	}
 	if !warned {
 		t.Errorf("no %s warning: %+v", WarnOffsetTruncated, res.Warnings)
+	}
+}
+
+// A lead-out that does not fit the tracks around it makes chdman's unsigned
+// arithmetic wrap. It converts the cue anyway, and the hashes depend on how.
+func TestCreateCDMultisessionGapsThatDoNotFit(t *testing.T) {
+	oracle.Require(t)
+	for _, tc := range []struct {
+		name            string
+		frames          int
+		leadOut, track2 string
+	}{
+		{"gap-larger-than-first-session", 2000, "00:01:00", "00:10:00"},
+		{"gap-larger-than-next-track", 1200, "00:05:00", "00:15:00"},
+		{"lead-out-past-next-track", 2000, "00:10:00", "00:06:00"},
+	} {
+		for _, ext := range []string{"bin", "img"} {
+			t.Run(tc.name+"/"+ext, func(t *testing.T) {
+				dir := t.TempDir()
+				testimg.Bin(t, dir, "disc."+ext, testimg.Track{Mode: "MODE1/2352", Frames: tc.frames, Shape: testimg.Mixed})
+				cue := testimg.WriteCue(t, dir, "s.cue", fmt.Sprintf(`FILE "disc.%s" BINARY
+REM SESSION 01
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+  REM LEAD-OUT %s
+REM SESSION 02
+  TRACK 02 MODE1/2352
+    INDEX 00 %[3]s
+    INDEX 01 %[3]s
+`, ext, tc.leadOut, tc.track2))
+				res := assertCreateCDMatches(t, cue, CreateOptions{}, "", 0)
+				overwritten := slices.ContainsFunc(res.Warnings, func(w Warning) bool { return w.Kind == WarnFramesOverwritten })
+				if overwritten != (ext == "bin") {
+					t.Errorf("frames-overwritten warning = %v for a .%s bin: %+v", overwritten, ext, res.Warnings)
+				}
+			})
+		}
 	}
 }
