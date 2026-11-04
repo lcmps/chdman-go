@@ -1,0 +1,12 @@
+chdman-go
+
+This project contains code translated from the MAME project's CHD and CD-ROM
+support (src/tools/chdman.cpp, src/lib/util/chd*.{cpp,h}, cdrom.{cpp,h},
+flac.cpp, huffman.cpp), copyright Aaron Giles and the MAME contributors,
+licensed under the BSD 3-Clause License:
+
+  https://github.com/mamedev/mame (tag mame0289)
+
+Redistribution and use of the translated code are subject to the BSD
+3-Clause License terms reproduced in the LICENSE file, and to retaining the
+original copyright notice of the MAME contributors.
