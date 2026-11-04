@@ -1,0 +1,298 @@
+package chdman
+
+import (
+	"bytes"
+	"context"
+	"encoding/hex"
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/lcmps/chdman-go/internal/chderr"
+	"github.com/lcmps/chdman-go/internal/format"
+	"github.com/lcmps/chdman-go/internal/testsupport/oracle"
+	"github.com/lcmps/chdman-go/internal/testsupport/testimg"
+)
+
+// chdmanHashes has chdman build a CD CHD and returns the hashes of its
+// header. It never reads the map: chdman writes a garbled map for some files
+// of one to three hunks, and these fixtures are small.
+func chdmanHashes(t *testing.T, cue, codecs string, hunkBytes int) (raw, sum string) {
+	t.Helper()
+	chd := filepath.Join(t.TempDir(), "want.chd")
+	oracle.CreateCD(t, cue, chd, codecs, hunkBytes)
+	b, err := os.ReadFile(chd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := format.ParseHeader(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(h.RawSHA1[:]), hex.EncodeToString(h.SHA1[:])
+}
+
+// assertCreateCDMatches runs CreateCD and compares its hashes, reported and
+// stored, with chdman's, then has chdman verify our file.
+func assertCreateCDMatches(t *testing.T, cue string, opts CreateOptions, codecs string, hunkBytes int) CreateResult {
+	t.Helper()
+	wantRaw, wantSum := chdmanHashes(t, cue, codecs, hunkBytes)
+	out := filepath.Join(t.TempDir(), "got.chd")
+	res, err := CreateCD(context.Background(), cue, out, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RawSHA1 != wantRaw {
+		t.Errorf("rawsha1 %s, chdman %s", res.RawSHA1, wantRaw)
+	}
+	if res.SHA1 != wantSum {
+		t.Errorf("sha1 %s, chdman %s", res.SHA1, wantSum)
+	}
+	if info := chdInfo(t, out); info.RawSHA1 != res.RawSHA1 || info.SHA1 != res.SHA1 {
+		t.Errorf("stored hashes %s/%s, result %s/%s", info.RawSHA1, info.SHA1, res.RawSHA1, res.SHA1)
+	}
+	if err := oracle.Verify(t, out); err != nil {
+		t.Errorf("chdman rejects our file: %v", err)
+	}
+	return res
+}
+
+func TestCreateCDHashParity(t *testing.T) {
+	oracle.Require(t)
+	for _, l := range testimg.Layouts() {
+		t.Run(l.Name, func(t *testing.T) {
+			cue := testimg.Cue(t, t.TempDir(), l.Disc)
+			assertCreateCDMatches(t, cue, CreateOptions{}, "", 0)
+		})
+	}
+}
+
+func TestCreateCDEachCodec(t *testing.T) {
+	oracle.Require(t)
+	for _, c := range []string{"cdzl", "cdzs", "cdlz", "cdfl", "lzma", "cdlz,cdzl", "none"} {
+		t.Run(c, func(t *testing.T) {
+			dir := t.TempDir()
+			cue := testimg.Cue(t, dir, testimg.Disc{Tracks: []testimg.Track{{Mode: "MODE1/2352", Frames: 40, Shape: testimg.Mixed}}})
+			out := filepath.Join(t.TempDir(), "got.chd")
+			opts := CreateOptions{Codecs: strings.Split(c, ",")}
+			if _, err := CreateCD(context.Background(), cue, out, opts); err != nil {
+				t.Fatal(err)
+			}
+			if err := oracle.Verify(t, out); err != nil {
+				t.Errorf("chdman rejects our file: %v", err)
+			}
+			if c != "none" {
+				if got := chdInfo(t, out).Codecs[0]; got != opts.Codecs[0] {
+					t.Errorf("first codec %s, want %s", got, opts.Codecs[0])
+				}
+				return
+			}
+			// An uncompressed CHD has no hashes: compare the data itself.
+			extracted := filepath.Join(t.TempDir(), "x.cue")
+			oracle.ExtractCD(t, out, extracted, false)
+			want, err := os.ReadFile(filepath.Join(dir, "disc.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(filepath.Join(filepath.Dir(extracted), "x.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Error("chdman extracts different data than the bin we read")
+			}
+		})
+	}
+}
+
+func TestCreateCDNonDefaultHunk(t *testing.T) {
+	oracle.Require(t)
+	dir := t.TempDir()
+	cue := testimg.Cue(t, dir, testimg.Layouts()[4].Disc)
+	t.Run("9792", func(t *testing.T) {
+		assertCreateCDMatches(t, cue, CreateOptions{HunkBytes: 9792}, "", 9792)
+	})
+	t.Run("not a frame multiple", func(t *testing.T) {
+		out := filepath.Join(dir, "bad.chd")
+		if _, err := CreateCD(context.Background(), cue, out, CreateOptions{HunkBytes: 9800}); err == nil {
+			t.Fatal("expected an error")
+		}
+		if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("output exists: %v", err)
+		}
+	})
+}
+
+func TestCreateCDWarnings(t *testing.T) {
+	oracle.Require(t)
+	mode1 := testimg.Track{Mode: "MODE1/2352", Frames: 30, Shape: testimg.Mixed}
+	audio := testimg.Track{Mode: "AUDIO", Frames: 20, Shape: testimg.Mixed}
+
+	t.Run("trailing bytes", func(t *testing.T) {
+		dir := t.TempDir()
+		bin := testimg.Bin(t, dir, "disc.bin", mode1)
+		f, err := os.OpenFile(bin, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Write(bytes.Repeat([]byte{0xAA}, 100))
+		f.Close()
+		cue := testimg.WriteCue(t, dir, "d.cue", "FILE \"disc.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n")
+		res := assertCreateCDMatches(t, cue, CreateOptions{}, "", 0)
+		if len(res.Warnings) != 1 || res.Warnings[0].Kind != WarnTrailingBytesDropped || res.Warnings[0].Track != 1 {
+			t.Errorf("warnings %+v", res.Warnings)
+		}
+	})
+	t.Run("lead-out", func(t *testing.T) {
+		dir := t.TempDir()
+		a := testimg.Bin(t, dir, "a.tmp", mode1)
+		b := testimg.Bin(t, dir, "b.tmp", audio)
+		var all []byte
+		for _, p := range []string{a, b} {
+			data, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			all = append(all, data...)
+			os.Remove(p)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "disc.bin"), all, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cue := testimg.WriteCue(t, dir, "s.cue", `FILE "disc.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+  REM LEAD-OUT 00:00:20
+REM SESSION 02
+  TRACK 02 AUDIO
+    INDEX 01 00:00:30
+`)
+		res := assertCreateCDMatches(t, cue, CreateOptions{}, "", 0)
+		if len(res.Warnings) != 1 || res.Warnings[0].Kind != WarnFramesOverwritten {
+			t.Errorf("warnings %+v", res.Warnings)
+		}
+	})
+}
+
+func TestCreateCDZeroByteBin(t *testing.T) {
+	oracle.Require(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "disc.bin"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cue := testimg.WriteCue(t, dir, "d.cue", "FILE \"disc.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n")
+	if err := oracle.Run(t, "createcd", "-f", "-i", cue, "-o", filepath.Join(t.TempDir(), "w.chd")); err == nil {
+		t.Fatal("chdman accepts an empty bin")
+	}
+	out := filepath.Join(dir, "out.chd")
+	_, err := CreateCD(context.Background(), cue, out, CreateOptions{})
+	if !errors.Is(err, chderr.InvalidCue) {
+		t.Fatalf("error %v, want InvalidCue", err)
+	}
+	if got := dirNames(t, dir); !slices.Equal(got, []string{"d.cue", "disc.bin"}) {
+		t.Errorf("directory holds %v", got)
+	}
+}
+
+func TestCreateCDShortBin(t *testing.T) {
+	dir := t.TempDir()
+	testimg.Bin(t, dir, "a.bin", testimg.Track{Mode: "MODE1/2352", Frames: 20, Shape: testimg.Mixed})
+	testimg.Bin(t, dir, "b.bin", testimg.Track{Mode: "AUDIO", Frames: 20, Shape: testimg.Mixed})
+	// Track 1 is 30 frames by the cue, but a.bin holds 20. chdman fails only
+	// when it reads the missing frames; we fail before writing anything.
+	cue := testimg.WriteCue(t, dir, "short.cue", `FILE "a.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    INDEX 01 00:00:30
+FILE "b.bin" BINARY
+  TRACK 03 AUDIO
+    INDEX 01 00:00:00
+`)
+	out := filepath.Join(dir, "out.chd")
+	_, err := CreateCD(context.Background(), cue, out, CreateOptions{})
+	if !errors.Is(err, chderr.InvalidCue) {
+		t.Fatalf("error %v, want InvalidCue", err)
+	}
+	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("output exists: %v", err)
+	}
+}
+
+func TestCreateCDRefusesToOverwriteAnInput(t *testing.T) {
+	dir := t.TempDir()
+	cue := testimg.Cue(t, dir, testimg.Disc{Split: true, Tracks: []testimg.Track{
+		{Mode: "MODE1/2352", Frames: 20, Shape: testimg.Mixed}, {Mode: "AUDIO", Frames: 20, Shape: testimg.Mixed}}})
+	for _, in := range []string{cue, filepath.Join(dir, "track02.bin")} {
+		before, err := os.ReadFile(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CreateCD(context.Background(), cue, in, CreateOptions{Force: true}); err == nil {
+			t.Errorf("expected an error writing over %s", in)
+		}
+		if after, _ := os.ReadFile(in); !bytes.Equal(before, after) {
+			t.Errorf("%s changed", in)
+		}
+	}
+}
+
+func TestCreateCDCancelClosesBins(t *testing.T) {
+	dir := t.TempDir()
+	cue := testimg.Cue(t, dir, testimg.Disc{Split: true, Tracks: []testimg.Track{
+		{Mode: "MODE1/2352", Frames: 4000, Shape: testimg.Mixed}, {Mode: "AUDIO", Frames: 4000, Shape: testimg.Mixed}}})
+	openFDs := func() int {
+		ents, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Skip("no /proc/self/fd")
+		}
+		return len(ents)
+	}
+	before := openFDs()
+	ctx, cancel := context.WithCancel(context.Background())
+	out := filepath.Join(dir, "out.chd")
+	_, err := CreateCD(ctx, cue, out, CreateOptions{Workers: 2, Progress: func(done, total uint64) { cancel() }})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("output exists: %v", err)
+	}
+	if after := openFDs(); after != before {
+		t.Errorf("%d file descriptors open, %d before", after, before)
+	}
+}
+
+func TestCreateCDBinsStayBounded(t *testing.T) {
+	// One bin per track, 99 tracks: at most one is open at any time.
+	dir := t.TempDir()
+	var tracks []testimg.Track
+	for range 99 {
+		tracks = append(tracks, testimg.Track{Mode: "AUDIO", Frames: 3, Shape: testimg.Random})
+	}
+	cue := testimg.Cue(t, dir, testimg.Disc{Split: true, Tracks: tracks})
+	ents, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Skip("no /proc/self/fd")
+	}
+	base, peak := len(ents), 0
+	out := filepath.Join(dir, "o.chd")
+	_, err = CreateCD(context.Background(), cue, out, CreateOptions{Workers: 1, HunkBytes: 2448, Progress: func(done, total uint64) {
+		if ents, err := os.ReadDir("/proc/self/fd"); err == nil {
+			peak = max(peak, len(ents))
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The temporary output, one bin and the directory listing itself.
+	if peak-base > 4 {
+		t.Errorf("up to %d descriptors open above the %d before", peak-base, base)
+	}
+	if got := chdInfo(t, out).HunkCount; got != 99*4/1 {
+		t.Errorf("%d hunks", got)
+	}
+}

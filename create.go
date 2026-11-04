@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"slices"
 
+	"github.com/lcmps/chdman-go/internal/cdrom"
 	"github.com/lcmps/chdman-go/internal/chderr"
 	"github.com/lcmps/chdman-go/internal/chdwriter"
 	"github.com/lcmps/chdman-go/internal/format"
@@ -65,6 +67,9 @@ const (
 	dvdHunkBytes   = 2 * dvdSectorBytes
 	minHunkBytes   = 16 // HUNK_SIZE_MIN in chdman.cpp
 )
+
+// defaultCDCodecs are chdman's codecs for CDs, s_default_cd_compression.
+var defaultCDCodecs = [4]format.CodecTag{format.CodecCDLZMA, format.CodecCDZlib, format.CodecCDFLAC}
 
 // defaultHDCodecs are chdman's codecs for hard disks and DVDs.
 var defaultHDCodecs = [4]format.CodecTag{format.CodecLZMA, format.CodecZlib, format.CodecHuffman, format.CodecFLAC}
@@ -198,5 +203,184 @@ func (s *isoSource) ReadHunk(index uint32, dst []byte) error {
 		return err
 	}
 	clear(dst[want:])
+	return nil
+}
+
+// CreateCD compresses the CD described by the cue sheet at cuePath into the
+// CHD at outPath, like chdman createcd. The bins are found next to the cue.
+// Input that chdman drops or overwrites is converted the same way and
+// reported in CreateResult.Warnings. The output appears only if the whole run
+// succeeds.
+func CreateCD(ctx context.Context, cuePath, outPath string, opts CreateOptions) (CreateResult, error) {
+	codecs, err := parseCodecs(opts.Codecs, defaultCDCodecs)
+	if err != nil {
+		return CreateResult{}, err
+	}
+	hunk, err := parseHunkBytes(opts.HunkBytes, cdrom.FrameSize, cdrom.FramesPerHunk*cdrom.FrameSize)
+	if err != nil {
+		return CreateResult{}, err
+	}
+	toc, srcs, warns, err := cdrom.ParseCue(cuePath)
+	if err != nil {
+		return CreateResult{}, err
+	}
+	inputs, err := checkCueBins(toc, srcs, cuePath)
+	if err != nil {
+		return CreateResult{}, err
+	}
+
+	var frames uint64
+	for _, t := range toc.Tracks {
+		frames += uint64(t.Frames + t.ExtraFrames)
+	}
+	src := &cdSource{toc: toc, srcs: srcs, framesPerHunk: hunk / cdrom.FrameSize}
+	defer src.Close()
+
+	var res CreateResult
+	err = writeOutputAtomically(ctx, outPath, opts.Force, inputs, func(f *os.File) error {
+		raw, sum, err := chdwriter.Write(ctx, f, src, chdwriter.Options{
+			Codecs:       codecs,
+			HunkBytes:    hunk,
+			UnitBytes:    cdrom.FrameSize,
+			LogicalBytes: frames * cdrom.FrameSize,
+			Metadata:     cdrom.Metadata(toc),
+			Workers:      workerCount(opts.Workers),
+			Progress:     opts.Progress,
+		})
+		res.RawSHA1, res.SHA1 = hex.EncodeToString(raw[:]), hex.EncodeToString(sum[:])
+		return err
+	})
+	if err != nil {
+		return CreateResult{}, err
+	}
+	for _, w := range warns {
+		res.Warnings = append(res.Warnings, Warning{Kind: WarningKind(w.Kind), Track: w.Track, Message: w.Message})
+	}
+	return res, nil
+}
+
+// checkCueBins makes sure that every track's frames lie within its bin, so a
+// short file fails before anything is written, and returns the paths that the
+// output must not overwrite: the cue and each distinct bin.
+func checkCueBins(toc cdrom.TOC, srcs []cdrom.TrackSource, cuePath string) ([]string, error) {
+	inputs := []string{cuePath}
+	sizes := map[string]uint64{}
+	for i, s := range srcs {
+		if s.Frames == 0 {
+			continue
+		}
+		size, ok := sizes[s.Path]
+		if !ok {
+			st, err := os.Stat(s.Path)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", chderr.InvalidCue, err)
+			}
+			size = uint64(st.Size())
+			sizes[s.Path] = size
+			inputs = append(inputs, s.Path)
+		}
+		t := toc.Tracks[i]
+		if end := s.Offset + uint64(s.Frames)*uint64(t.DataSize+t.SubSize); end > size {
+			return nil, fmt.Errorf("%w: track %d needs %d bytes of %s, which has %d", chderr.InvalidCue, i+1, end, s.Path, size)
+		}
+	}
+	return inputs, nil
+}
+
+// cdSource serves hunks of a CD as chdman lays it out, a translation of
+// chd_cd_compressor::read_data in chdman.cpp: each track in order, every
+// frame 2352 bytes of sector then 96 of subcode, followed by the track's
+// pad and extra frames of zeros. It keeps at most one bin open, the one that
+// the current track reads from.
+type cdSource struct {
+	toc           cdrom.TOC
+	srcs          []cdrom.TrackSource
+	framesPerHunk uint32
+
+	f       *os.File
+	path    string
+	scratch []byte
+
+	track      int    // the track that the last frame read belonged to
+	trackFirst uint32 // the frame at which that track starts
+}
+
+// Close closes the open bin. It is safe to call more than once.
+func (s *cdSource) Close() error {
+	f := s.f
+	s.f, s.path = nil, ""
+	if f == nil {
+		return nil
+	}
+	return f.Close()
+}
+
+func (s *cdSource) ReadHunk(index uint32, dst []byte) error {
+	clear(dst)
+	frame := uint64(index) * uint64(s.framesPerHunk)
+	if frame < uint64(s.trackFirst) {
+		s.track, s.trackFirst = 0, 0
+	}
+	for n := uint32(0); n < s.framesPerHunk; {
+		// Find the track holding the frame; past the last one the hunk is
+		// padding.
+		for s.track < len(s.toc.Tracks) {
+			t := s.toc.Tracks[s.track]
+			if frame < uint64(s.trackFirst)+uint64(t.Frames+t.ExtraFrames) {
+				break
+			}
+			s.trackFirst += t.Frames + t.ExtraFrames
+			s.track++
+		}
+		if s.track == len(s.toc.Tracks) {
+			return nil
+		}
+		t, src := s.toc.Tracks[s.track], s.srcs[s.track]
+		rel := uint32(frame - uint64(s.trackFirst))
+		inTrack := min(s.framesPerHunk-n, t.Frames+t.ExtraFrames-rel)
+		if rel < src.Frames {
+			// Frames that come from the bin; the rest of the track is zeros.
+			run := min(inTrack, src.Frames-rel)
+			if err := s.readFrames(dst[n*cdrom.FrameSize:], t, src, rel, run); err != nil {
+				return err
+			}
+		}
+		n += inTrack
+		frame += uint64(inTrack)
+	}
+	return nil
+}
+
+// readFrames reads count frames of a track, starting at its frame rel, into
+// dst, whose frames are cdrom.FrameSize apart.
+func (s *cdSource) readFrames(dst []byte, t cdrom.Track, src cdrom.TrackSource, rel, count uint32) error {
+	if s.path != src.Path || s.f == nil {
+		if err := s.Close(); err != nil {
+			return err
+		}
+		f, err := os.Open(src.Path)
+		if err != nil {
+			return err
+		}
+		s.f, s.path = f, src.Path
+	}
+	perFrame := int(t.DataSize + t.SubSize)
+	s.scratch = slices.Grow(s.scratch[:0], int(count)*perFrame)[:int(count)*perFrame]
+	off := src.Offset + uint64(rel)*uint64(perFrame)
+	if _, err := s.f.ReadAt(s.scratch, int64(off)); err != nil {
+		if errors.Is(err, io.EOF) {
+			err = io.ErrUnexpectedEOF
+		}
+		return fmt.Errorf("reading %s: %w", src.Path, err)
+	}
+	for i := range int(count) {
+		frame := dst[i*cdrom.FrameSize : (i+1)*cdrom.FrameSize]
+		copy(frame, s.scratch[i*perFrame:(i+1)*perFrame])
+		if src.Swap {
+			for j := 0; j < cdrom.SectorSize; j += 2 {
+				frame[j], frame[j+1] = frame[j+1], frame[j]
+			}
+		}
+	}
 	return nil
 }
