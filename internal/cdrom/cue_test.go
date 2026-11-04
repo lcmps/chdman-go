@@ -589,3 +589,56 @@ func TestCueBeforeFirstTrack(t *testing.T) {
 		})
 	}
 }
+
+// sparseBin creates a file of size bytes that takes no disk space.
+func sparseBin(t *testing.T, dir, name string, size int64) {
+	t.Helper()
+	f, err := os.Create(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := f.Truncate(size); err != nil {
+		t.Skipf("cannot make a sparse file: %v", err)
+	}
+}
+
+// bigTrackCue has a first track of 2,000,000 frames, 4,704,000,000 bytes, in
+// a bin of 5 GiB.
+func bigTrackCue(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	sparseBin(t, dir, "a.bin", 5<<30)
+	return testimg.WriteCue(t, dir, "d.cue", `FILE "a.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    INDEX 01 444:26:50
+`)
+}
+
+// chdman multiplies the frames of the previous track by its frame size in 32
+// bits, so track 2 starts 4,704,000,000 mod 2^32 bytes into the bin.
+func TestCuePreviousTrackSizeWraps(t *testing.T) {
+	cue := bigTrackCue(t)
+	toc, srcs, warns, err := cdrom.ParseCue(cue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wrapped = 4704000000 - 1<<32
+	if got := srcs[1].Offset; got != wrapped {
+		t.Errorf("track 2 offset = %d, want %d", got, wrapped)
+	}
+	if want := uint32((5<<30 - wrapped) / 2352); toc.Tracks[1].Frames != want {
+		t.Errorf("track 2 frames = %d, want %d", toc.Tracks[1].Frames, want)
+	}
+	var found bool
+	for _, w := range warns {
+		if w.Kind == cdrom.WarnOffsetTruncated && w.Track == 2 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no %s warning for track 2: %+v", cdrom.WarnOffsetTruncated, warns)
+	}
+}

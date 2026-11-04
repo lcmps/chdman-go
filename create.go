@@ -51,6 +51,7 @@ type WarningKind string
 const (
 	WarnTrailingBytesDropped WarningKind = "trailing-bytes-dropped"
 	WarnFramesOverwritten    WarningKind = "frames-overwritten"
+	WarnOffsetTruncated      WarningKind = "track-offset-truncated"
 	WarnSubcodeOmitted       WarningKind = "subcode-omitted"
 )
 

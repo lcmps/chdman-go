@@ -9,6 +9,7 @@ package cdrom
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 
@@ -33,6 +34,10 @@ const (
 	// WarnTrailingBytes is a bin whose size is not a whole number of frames
 	// for its track: chdman drops the partial frame at the end.
 	WarnTrailingBytes = "trailing-bytes-dropped"
+	// WarnOffsetTruncated is a track that follows a track of 4 GiB or more in
+	// the same bin: chdman computes the raw size of that track in 32 bits, so
+	// it starts reading the wrong bytes.
+	WarnOffsetTruncated = "track-offset-truncated"
 	// WarnFramesOverwritten is a single-bin multisession cue with REM
 	// LEAD-OUT and a non-.img file: chdman writes zeros over real frames.
 	WarnFramesOverwritten = "frames-overwritten"
@@ -300,7 +305,7 @@ func (p *cueParser) finish() (TOC, []TrackSource, []Warning, error) {
 			if tlen == 0 {
 				return TOC{}, nil, nil, missingBin(in.fname)
 			}
-			in.offset = info[n-1].offset + uint64(tracks[n-1].Frames)*bytesPerFrame(n-1)
+			in.offset = info[n-1].offset + p.previousRawSize(n)
 			if in.offset > tlen {
 				return TOC{}, nil, nil, invalid("track %d starts past the end of %s", n+1, in.fname)
 			}
@@ -314,7 +319,7 @@ func (p *cueParser) finish() (TOC, []TrackSource, []Warning, error) {
 			}
 			t.Frames = uint32(diff)
 			if n > 0 {
-				in.offset = info[n-1].offset + uint64(tracks[n-1].Frames)*bytesPerFrame(n-1)
+				in.offset = info[n-1].offset + p.previousRawSize(n)
 			}
 		case t.Frames == 0:
 			// The tracks are in different files.
@@ -389,6 +394,24 @@ func (p *cueParser) finish() (TOC, []TrackSource, []Warning, error) {
 	}
 	setOffsets(toc.Tracks)
 	return toc, srcs, p.warnings, nil
+}
+
+// previousRawSize is the size in bytes that chdman takes track n-1 to have
+// when it places track n after it in the same bin. It multiplies two uint32,
+// so a track of 4 GiB or more wraps; the value is kept, and warned about,
+// because the offsets and sizes that follow from it are written into the CHD.
+func (p *cueParser) previousRawSize(n int) uint64 {
+	prev := &p.tracks[n-1]
+	size := uint64(prev.Frames) * uint64(prev.DataSize+prev.SubSize)
+	if size > math.MaxUint32 {
+		p.warnings = append(p.warnings, Warning{
+			Kind:  WarnOffsetTruncated,
+			Track: n + 1,
+			Message: fmt.Sprintf("track %d: track %d is %d bytes, which chdman computes in 32 bits as %d; it reads track %d from the wrong place in %s",
+				n+1, n, size, uint32(size), n+1, p.info[n].fname),
+		})
+	}
+	return uint64(uint32(size))
 }
 
 // trailing records the bytes after the last whole frame of track n.

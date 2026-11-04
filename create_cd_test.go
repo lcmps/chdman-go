@@ -371,3 +371,35 @@ func TestNegativePregapMatchesChdman(t *testing.T) {
 		t.Errorf("tracks %+v, chdman's %+v", a, b)
 	}
 }
+
+// A bin of 4 GiB or more makes chdman compute the offset of the track after
+// it in 32 bits. The hashes must follow it into the wrong bytes.
+func TestCreateCDPreviousTrackSizeWraps(t *testing.T) {
+	if testing.Short() {
+		t.Skip("reads 5 GiB")
+	}
+	oracle.Require(t)
+	dir := t.TempDir()
+	f, err := os.Create(filepath.Join(dir, "a.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(5 << 30); err != nil {
+		t.Skipf("cannot make a sparse file: %v", err)
+	}
+	f.Close()
+	cue := testimg.WriteCue(t, dir, "d.cue", `FILE "a.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    INDEX 01 444:26:50
+`)
+	res := assertCreateCDMatches(t, cue, CreateOptions{Codecs: []string{"cdzl"}}, "cdzl", 0)
+	var warned bool
+	for _, w := range res.Warnings {
+		warned = warned || (w.Kind == WarnOffsetTruncated && w.Track == 2)
+	}
+	if !warned {
+		t.Errorf("no %s warning: %+v", WarnOffsetTruncated, res.Warnings)
+	}
+}
