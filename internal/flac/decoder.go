@@ -10,7 +10,6 @@
 package flac
 
 import (
-	"errors"
 	"fmt"
 	"math/bits"
 	"slices"
@@ -25,7 +24,7 @@ const (
 	maxBlockSize = 65535
 )
 
-var errTruncated = errors.New("flac: truncated stream")
+var errTruncated = fmt.Errorf("%w: flac: truncated stream", chderr.CorruptData)
 
 func corrupt(format string, a ...any) error {
 	return fmt.Errorf("%w: flac: %s", chderr.CorruptData, fmt.Sprintf(format, a...))

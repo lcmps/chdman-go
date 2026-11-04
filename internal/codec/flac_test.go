@@ -3,10 +3,12 @@ package codec
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"math"
 	"math/rand/v2"
 	"testing"
 
+	"github.com/lcmps/chdman-go/internal/chderr"
 	"github.com/lcmps/chdman-go/internal/format"
 )
 
@@ -70,6 +72,77 @@ func TestFLACCodecRoundTrip(t *testing.T) {
 		}
 		if err := d.Decompress(make([]byte, size), []byte{'X', 0}); err == nil {
 			t.Error("bad endian byte accepted")
+		}
+	}
+}
+
+func TestFLACTruncationIsCorruptData(t *testing.T) {
+	const size = 4096
+	c, err := NewCompressor(format.CodecFLAC, size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := NewDecompressor(format.CodecFLAC, size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comp, err := c.Compress(nil, audioHunk(size, 3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]byte, size)
+	if err := d.Decompress(out, nil); !errors.Is(err, chderr.CorruptData) {
+		t.Errorf("empty: err = %v, want CorruptData", err)
+	}
+	if err := d.Decompress(out, comp[:1]); !errors.Is(err, chderr.CorruptData) {
+		t.Errorf("marker only: err = %v, want CorruptData", err)
+	}
+	for n := 1; n < len(comp); n += 7 {
+		if err := d.Decompress(out, comp[:n]); err != nil && !errors.Is(err, chderr.CorruptData) {
+			t.Fatalf("prefix %d: err = %v, want CorruptData", n, err)
+		}
+	}
+	if err := d.Decompress(out, comp[:len(comp)/2]); !errors.Is(err, chderr.CorruptData) {
+		t.Errorf("half: err = %v, want CorruptData", err)
+	}
+}
+
+func TestCDFLACTruncationIsCorruptData(t *testing.T) {
+	hunk := uint32(cdFrameSize * 8)
+	c, err := NewCompressor(format.CodecCDFLAC, hunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := NewDecompressor(format.CodecCDFLAC, hunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comp, err := c.Compress(nil, make([]byte, hunk))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]byte, hunk)
+	for _, n := range []int{0, 1, len(comp) / 2} {
+		if err := d.Decompress(out, comp[:n]); !errors.Is(err, chderr.CorruptData) {
+			t.Errorf("prefix %d: err = %v, want CorruptData", n, err)
+		}
+	}
+}
+
+func TestFLACCorruptionErrorsAreCorruptData(t *testing.T) {
+	const size = 4096
+	c, _ := NewCompressor(format.CodecFLAC, size)
+	d, _ := NewDecompressor(format.CodecFLAC, size)
+	comp, err := c.Compress(nil, audioHunk(size, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]byte, size)
+	for i := 1; i < len(comp); i++ {
+		bad := bytes.Clone(comp)
+		bad[i] ^= 0xff
+		if err := d.Decompress(out, bad); err != nil && !errors.Is(err, chderr.CorruptData) {
+			t.Fatalf("flip byte %d: err = %v, want CorruptData", i, err)
 		}
 	}
 }
