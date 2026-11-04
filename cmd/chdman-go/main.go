@@ -50,11 +50,19 @@ var commands = map[string]command{
 	"info":       runInfo,
 }
 
-// notifyContext returns a context that ends when the process is asked to stop,
-// with ^C, SIGTERM or SIGHUP (a closed terminal or a lost SSH session). A cancelled run removes its temporary files; the
-// default action of a signal would leave them.
+// notifyContext returns a context that ends when the process is asked to
+// stop, with ^C, SIGTERM or SIGHUP (a closed terminal or a lost SSH session).
+// A cancelled run removes its temporary files; the default action of a signal
+// would leave them.
+//
+// SIGHUP is taken only if it was not ignored at startup: signal.Notify would
+// un-ignore it, and a run started with nohup must survive its terminal.
 func notifyContext(parent context.Context) (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	sigs := []os.Signal{os.Interrupt, syscall.SIGTERM}
+	if !signal.Ignored(syscall.SIGHUP) {
+		sigs = append(sigs, syscall.SIGHUP)
+	}
+	return signal.NotifyContext(parent, sigs...)
 }
 
 func main() {
