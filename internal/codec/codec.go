@@ -30,6 +30,8 @@ func NewCompressor(t format.CodecTag, hunkBytes uint32) (Compressor, error) {
 		return newDeflateCompressor()
 	case format.CodecZstd:
 		return newZstdCompressor()
+	case format.CodecLZMA:
+		return newLZMACompressor(hunkBytes), nil
 	case format.CodecHuffman:
 		return huffCompressor{}, nil
 	}
@@ -43,6 +45,8 @@ func NewDecompressor(t format.CodecTag, hunkBytes uint32) (Decompressor, error) 
 		return newDeflateDecompressor(), nil
 	case format.CodecZstd:
 		return newZstdDecompressor()
+	case format.CodecLZMA:
+		return newLZMADecompressor(hunkBytes), nil
 	case format.CodecHuffman:
 		return huffDecompressor{}, nil
 	}
