@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,30 +18,30 @@ import (
 	"github.com/lcmps/chdman-go/internal/testsupport/testimg"
 )
 
-// TestSighupHelper is the child of TestSighupDuringCreate, not a test. It
-// installs the CLI's signal handling, says it is ready, waits to be told to
-// go, gives a SIGHUP sent meanwhile time to arrive, then runs a create.
-func TestSighupHelper(t *testing.T) {
-	args := os.Getenv("CHDMAN_GO_SIGHUP_HELPER")
-	if args == "" {
-		t.Skip("only runs as a child of TestSighupDuringCreate")
+// TestMain turns the test binary into the child of TestSighupDuringCreate
+// when CHDMAN_GO_SIGHUP_HELPER is set. The child installs the CLI's signal
+// handling, says it is ready, waits to be told to go, gives a SIGHUP sent
+// meanwhile time to arrive, then runs a create.
+func TestMain(m *testing.M) {
+	if args := os.Getenv("CHDMAN_GO_SIGHUP_HELPER"); args != "" {
+		ctx, stop := notifyContext(context.Background())
+		defer stop()
+		fmt.Println("ready")
+		bufio.NewReader(os.Stdin).ReadString('\n')
+		time.Sleep(300 * time.Millisecond)
+		in, out, _ := strings.Cut(args, "|")
+		os.Exit(run(ctx, []string{"createdvd", "-i", in, "-o", out}, os.Stdout, os.Stderr))
 	}
-	ctx, stop := notifyContext(t.Context())
-	defer stop()
-	fmt.Println("ready")
-	bufio.NewReader(os.Stdin).ReadString('\n')
-	time.Sleep(300 * time.Millisecond)
-	in, out, _ := strings.Cut(args, "|")
-	os.Exit(run(ctx, []string{"createdvd", "-i", in, "-o", out}, os.Stdout, os.Stderr))
+	os.Exit(m.Run())
 }
 
-// startHelper runs the helper with SIGHUP ignored or not, sends it SIGHUP
+// runWithSighup runs the helper with SIGHUP ignored or not, sends it SIGHUP
 // while it waits, and returns its exit code.
 func runWithSighup(t *testing.T, ignored bool, in, out string) int {
 	t.Helper()
 	cmd := exec.Command("sh", "-c", `if [ "$1" = ignore ]; then trap '' HUP; fi; shift; exec "$@"`, "sh",
 		map[bool]string{true: "ignore", false: "keep"}[ignored],
-		os.Args[0], "-test.run=^TestSighupHelper$")
+		os.Args[0])
 	cmd.Env = append(os.Environ(), "CHDMAN_GO_SIGHUP_HELPER="+in+"|"+out)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
