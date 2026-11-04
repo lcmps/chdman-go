@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -75,6 +76,14 @@ func TestParseHeaderRejects(t *testing.T) {
 		{"version 4", mutate(func(b []byte) { binary.BigEndian.PutUint32(b[12:], 4) }), chderr.UnsupportedVersion},
 		{"parent", mutate(func(b []byte) { b[110] = 1 }), chderr.ParentRequired},
 		{"zero hunk", mutate(func(b []byte) { binary.BigEndian.PutUint32(b[56:], 0) }), chderr.CorruptData},
+		{"hunk count overflows uint32", mutate(func(b []byte) {
+			binary.BigEndian.PutUint64(b[32:], 1<<40)
+			binary.BigEndian.PutUint32(b[56:], 1)
+		}), chderr.CorruptData},
+		{"logical size wraps", mutate(func(b []byte) {
+			binary.BigEndian.PutUint64(b[32:], math.MaxUint64)
+		}), chderr.CorruptData},
+		{"huge hunk", mutate(func(b []byte) { binary.BigEndian.PutUint32(b[56:], 0xFFFFF000) }), chderr.CorruptData},
 		{"bad length", mutate(func(b []byte) { binary.BigEndian.PutUint32(b[8:], 108) }), chderr.CorruptData},
 	}
 	for _, tt := range tests {

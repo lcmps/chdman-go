@@ -7,6 +7,7 @@ package format
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 
 	"github.com/lcmps/chdman-go/internal/chderr"
 )
@@ -44,6 +45,9 @@ func (c CodecTag) String() string {
 	}
 	return string([]byte{byte(c >> 24), byte(c >> 16), byte(c >> 8), byte(c)})
 }
+
+// MaxHunkBytes is the largest hunk size chdman will create (HUNK_SIZE_MAX).
+const MaxHunkBytes = 1024 * 1024
 
 // Header is a decoded CHD v5 header.
 type Header struct {
@@ -96,6 +100,13 @@ func ParseHeader(b []byte) (Header, error) {
 	copy(h.ParentSHA1[:], b[104:124])
 	if h.HunkBytes == 0 || h.UnitBytes == 0 {
 		return Header{}, fmt.Errorf("%w: zero hunk or unit size", chderr.CorruptData)
+	}
+	if h.HunkBytes > MaxHunkBytes {
+		return Header{}, fmt.Errorf("%w: hunk size %d exceeds %d", chderr.CorruptData, h.HunkBytes, MaxHunkBytes)
+	}
+	if hunks := (h.LogicalBytes + uint64(h.HunkBytes) - 1) / uint64(h.HunkBytes); hunks > math.MaxUint32 ||
+		h.LogicalBytes > math.MaxUint64-uint64(h.HunkBytes) {
+		return Header{}, fmt.Errorf("%w: %d bytes in %d byte hunks", chderr.CorruptData, h.LogicalBytes, h.HunkBytes)
 	}
 	if h.ParentSHA1 != [20]byte{} {
 		return Header{}, fmt.Errorf("%w", chderr.ParentRequired)
