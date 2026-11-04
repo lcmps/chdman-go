@@ -3,6 +3,7 @@ package testimg
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -35,7 +36,12 @@ const RepeatBlock = 64
 const (
 	isoSector  = 2048
 	mode2Plain = 2336
-	rawSector  = cdrom.SectorSize
+	// userOffset2336 is where the payload sits in a MODE2/2336 sector: after
+	// the 8-byte XA subheader.
+	userOffset2336 = 8
+	userOffsetRaw1 = 16
+	userOffsetRaw2 = 24
+	rawSector      = cdrom.SectorSize
 )
 
 // Track describes one cue track. Frames is the number of frames the track
@@ -48,6 +54,11 @@ type Track struct {
 	Postgap   int
 	IndexZero int // frames of INDEX 00 data at the start of the track
 	Shape     Shape
+	// Data, if set, is user data placed in the payload of the first
+	// len(Data)/2048 sectors of the track (rounded up, zero padded), at the
+	// offset where the mode keeps it: 0 for MODE1/2048, 8 for MODE2/2336, 16
+	// for MODE1/2352 and 24 for MODE2/2352. AUDIO tracks ignore it.
+	Data []byte
 }
 
 // Disc describes a cue sheet. Session2From is the 1-based number of the first
@@ -200,12 +211,22 @@ func rawSectorFor(t testing.TB, tr Track) int {
 // sector builds frame i of a track; lba is its absolute frame number.
 func sector(t testing.TB, tr Track, i, lba int) []byte {
 	size := rawSectorFor(t, tr)
+	userData, hasData := tr.userData(i)
 	if tr.Mode == "AUDIO" || tr.Mode == "MODE1/2048" || tr.Mode == "MODE2/2336" || tr.Shape == Random {
-		return payload(tr.Shape, lba, size)
+		s := payload(tr.Shape, lba, size)
+		if hasData {
+			switch tr.Mode {
+			case "MODE1/2048":
+				copy(s, userData)
+			case "MODE2/2336":
+				copy(s[userOffset2336:], userData)
+			}
+		}
+		return s
 	}
-	mode := byte(1)
+	mode, offset := byte(1), userOffsetRaw1
 	if tr.Mode == "MODE2/2352" {
-		mode = 2
+		mode, offset = 2, userOffsetRaw2
 	}
 	s := make([]byte, rawSector)
 	copy(s, []byte{0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00})
@@ -218,9 +239,22 @@ func sector(t testing.TB, tr Track, i, lba int) []byte {
 	}
 	m, sec, f := lbaToMSF(hdrLBA + 150)
 	s[12], s[13], s[14], s[15] = bcd(m), bcd(sec), bcd(f), mode
-	copy(s[16:16+isoSector], payload(tr.Shape, lba, isoSector))
+	copy(s[offset:offset+isoSector], payload(tr.Shape, lba, isoSector))
+	if hasData {
+		copy(s[offset:offset+isoSector], userData)
+	}
 	cdrom.ECCGenerate(s)
 	return s
+}
+
+// userData returns the 2048 bytes of Data for sector i of the track.
+func (tr Track) userData(i int) ([]byte, bool) {
+	if tr.Mode == "AUDIO" || i*isoSector >= len(tr.Data) {
+		return nil, false
+	}
+	b := make([]byte, isoSector)
+	copy(b, tr.Data[i*isoSector:])
+	return b, true
 }
 
 // payload returns size deterministic bytes for sector idx of shape s.
@@ -265,4 +299,84 @@ func write(t testing.TB, path string, data []byte) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// File is a root directory file of an ISO9660 image built by Filesystem.
+type File struct {
+	Name string // such as "SYSTEM.CNF"; ";1" is appended
+	Data []byte
+}
+
+// Filesystem builds a minimal ISO9660 image of 2048-byte sectors: sixteen
+// empty system sectors, the primary volume descriptor at sector 16, the
+// terminator at 17, the root directory at 18, then each file's data, one file
+// after another, each starting on a sector boundary.
+func Filesystem(files ...File) []byte {
+	const rootLBA = 18
+	lbas := make([]int, len(files))
+	next := rootLBA + 1
+	for i, f := range files {
+		lbas[i] = next
+		next += max(1, (len(f.Data)+isoSector-1)/isoSector)
+	}
+
+	record := func(name []byte, lba, size int, flags byte) []byte {
+		n := 33 + len(name)
+		n += n % 2 // the record length is even
+		r := make([]byte, n)
+		r[0], r[25], r[32] = byte(n), flags, byte(len(name))
+		putBoth32(r[2:], lba)
+		putBoth32(r[10:], size)
+		r[18], r[19], r[20] = 126, 1, 1 // 2026-01-01
+		r[28], r[31] = 1, 1             // volume sequence number
+		copy(r[33:], name)
+		return r
+	}
+	var root []byte
+	root = append(root, record([]byte{0}, rootLBA, isoSector, 2)...)
+	root = append(root, record([]byte{1}, rootLBA, isoSector, 2)...)
+	for i, f := range files {
+		root = append(root, record([]byte(f.Name+";1"), lbas[i], len(f.Data), 0)...)
+	}
+
+	img := make([]byte, next*isoSector)
+	pvd := img[16*isoSector:]
+	pvd[0] = 1
+	copy(pvd[1:], "CD001")
+	pvd[6] = 1
+	copy(pvd[8:], bytes.Repeat([]byte{' '}, 64))
+	copy(pvd[40:], "TESTIMG"+strings.Repeat(" ", 25))
+	putBoth32(pvd[80:], next) // volume space size
+	putBoth16(pvd[120:], 1)   // volume set size
+	putBoth16(pvd[124:], 1)   // volume sequence number
+	putBoth16(pvd[128:], isoSector)
+	copy(pvd[156:], record([]byte{0}, rootLBA, isoSector, 2)[:34])
+	pvd[881] = 1
+	term := img[17*isoSector:]
+	term[0] = 255
+	copy(term[1:], "CD001")
+	term[6] = 1
+	copy(img[rootLBA*isoSector:], root)
+	for i, f := range files {
+		copy(img[lbas[i]*isoSector:], f.Data)
+	}
+	return img
+}
+
+func putBoth32(b []byte, v int) {
+	binary.LittleEndian.PutUint32(b, uint32(v))
+	binary.BigEndian.PutUint32(b[4:], uint32(v))
+}
+
+func putBoth16(b []byte, v int) {
+	binary.LittleEndian.PutUint16(b, uint16(v))
+	binary.BigEndian.PutUint16(b[2:], uint16(v))
+}
+
+// WriteISO writes data to dir/image.iso and returns its path.
+func WriteISO(t testing.TB, dir string, data []byte) string {
+	t.Helper()
+	path := filepath.Join(dir, "image.iso")
+	write(t, path, data)
+	return path
 }
