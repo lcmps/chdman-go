@@ -101,6 +101,9 @@ func ParseHeader(b []byte) (Header, error) {
 	if h.HunkBytes == 0 || h.UnitBytes == 0 {
 		return Header{}, fmt.Errorf("%w: zero hunk or unit size", chderr.CorruptData)
 	}
+	if h.HunkBytes%h.UnitBytes != 0 {
+		return Header{}, fmt.Errorf("%w: hunk size %d is not a multiple of unit size %d", chderr.CorruptData, h.HunkBytes, h.UnitBytes)
+	}
 	if h.HunkBytes > MaxHunkBytes {
 		return Header{}, fmt.Errorf("%w: hunk size %d exceeds %d", chderr.CorruptData, h.HunkBytes, MaxHunkBytes)
 	}

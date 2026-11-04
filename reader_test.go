@@ -297,3 +297,18 @@ func TestReaderAcceptsEOFWithData(t *testing.T) {
 		}
 	}
 }
+
+// A header with one-byte hunks must not make the hunk cache hold millions of
+// entries.
+func TestReaderCacheKeepIsCapped(t *testing.T) {
+	h := format.Header{LogicalBytes: 4, HunkBytes: 1, UnitBytes: 1, MapOffset: format.HeaderSize}
+	hdr := h.Marshal()
+	file := append(hdr[:], make([]byte, 4*4)...) // four zero hunks
+	r, err := NewReader(bytes.NewReader(file), int64(len(file)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.keep > cacheMaxKeep {
+		t.Errorf("keep = %d, want at most %d", r.keep, cacheMaxKeep)
+	}
+}

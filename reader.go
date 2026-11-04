@@ -69,6 +69,7 @@ type Info struct {
 const (
 	cacheBytes   = 16 << 20 // decoded hunks kept in memory
 	cacheMinKeep = 4
+	cacheMaxKeep = 1 << 12 // bounds the entry count when hunks are tiny
 )
 
 // Reader gives random access to the logical content of a CHD and verifies it.
@@ -141,7 +142,7 @@ func NewReader(src io.ReaderAt, size int64) (*Reader, error) {
 	r := &Reader{
 		src: src, hdr: hdr, entries: entries, meta: meta,
 		lru: list.New(), cache: map[uint32]*list.Element{},
-		keep: max(cacheMinKeep, cacheBytes/int(hdr.HunkBytes)),
+		keep: min(cacheMaxKeep, max(cacheMinKeep, cacheBytes/int(hdr.HunkBytes))),
 	}
 	// Fail early on codecs this library lacks.
 	for _, tag := range hdr.Codecs {

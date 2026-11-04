@@ -98,3 +98,18 @@ func TestParseHeaderRejects(t *testing.T) {
 		t.Fatalf("good header rejected: %v", err)
 	}
 }
+
+func TestParseHeaderRejectsIndivisibleHunk(t *testing.T) {
+	h := Header{Codecs: [4]CodecTag{CodecZlib}, LogicalBytes: 8192, HunkBytes: 4096, UnitBytes: 2048}
+	raw := h.Marshal()
+	if _, err := ParseHeader(raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	for _, hunk := range []uint32{1, 3000, 4097} {
+		h.HunkBytes = hunk
+		raw := h.Marshal()
+		if _, err := ParseHeader(raw[:]); !errors.Is(err, chderr.CorruptData) {
+			t.Errorf("hunk %d with unit 2048: err = %v, want CorruptData", hunk, err)
+		}
+	}
+}
