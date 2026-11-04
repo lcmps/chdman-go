@@ -52,5 +52,10 @@ func (d *deflateDecompressor) Decompress(dst, src []byte) error {
 	if _, err := io.ReadFull(d.r, dst); err != nil {
 		return fmt.Errorf("%w: zlib: %v", chderr.CorruptData, err)
 	}
+	// Like inflate in chdman, require the stream to end exactly with the hunk.
+	var extra [1]byte
+	if n, err := d.r.Read(extra[:]); n != 0 || err != io.EOF {
+		return fmt.Errorf("%w: zlib: stream does not end with the hunk", chderr.CorruptData)
+	}
 	return nil
 }

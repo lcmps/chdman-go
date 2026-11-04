@@ -184,3 +184,41 @@ func TestVerifyAcceptsCHSE(t *testing.T) {
 	}
 	_ = sha1.Size
 }
+
+// Every bit flip that chdman refuses must not verify here either. Only
+// files that Verify accepts are shown to chdman, which keeps the sweep fast.
+func TestVerifyZlibBitFlipsAgreeWithChdman(t *testing.T) {
+	if testing.Short() {
+		t.Skip("sweeps every byte of a file")
+	}
+	chd, _ := makeDVD(t, testimg.Mixed, 12, "zlib", 4096) // 6 hunks
+	orig, err := os.ReadFile(chd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, err := format.ParseHeader(orig); err != nil || h.HunkCount() < 4 {
+		t.Fatalf("header %+v, %v: want at least 4 hunks", h, err)
+	}
+	flipped := filepath.Join(t.TempDir(), "flipped.chd")
+	survivors := 0
+	for i := range orig {
+		b := bytes.Clone(orig)
+		b[i] ^= 1 << (i % 8)
+		r, err := NewReader(bytes.NewReader(b), int64(len(b)))
+		if err != nil {
+			continue
+		}
+		res, err := r.Verify(context.Background(), VerifyOptions{Workers: 2})
+		if err != nil || res.Status != VerifyOK {
+			continue
+		}
+		survivors++
+		if err := os.WriteFile(flipped, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := oracle.Verify(t, flipped); err != nil {
+			t.Errorf("flipping bit %d of byte %d: Verify says OK but chdman rejects the file: %v", i%8, i, err)
+		}
+	}
+	t.Logf("%d of %d flips survive Verify", survivors, len(orig))
+}
