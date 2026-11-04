@@ -28,6 +28,10 @@ func NewCompressor(t format.CodecTag, hunkBytes uint32) (Compressor, error) {
 	switch t {
 	case format.CodecZlib:
 		return newDeflateCompressor()
+	case format.CodecZstd:
+		return newZstdCompressor()
+	case format.CodecHuffman:
+		return huffCompressor{}, nil
 	}
 	return nil, fmt.Errorf("%w: %v", chderr.UnsupportedCodec, t)
 }
@@ -37,6 +41,10 @@ func NewDecompressor(t format.CodecTag, hunkBytes uint32) (Decompressor, error) 
 	switch t {
 	case format.CodecZlib:
 		return newDeflateDecompressor(), nil
+	case format.CodecZstd:
+		return newZstdDecompressor()
+	case format.CodecHuffman:
+		return huffDecompressor{}, nil
 	}
 	return nil, fmt.Errorf("%w: %v", chderr.UnsupportedCodec, t)
 }
