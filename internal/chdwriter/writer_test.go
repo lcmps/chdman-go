@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/lcmps/chdman-go/internal/format"
@@ -319,6 +320,30 @@ func TestWriteRejectsBadOptions(t *testing.T) {
 		mutate(&o)
 		if _, _, err := Write(context.Background(), f, memSource{make([]byte, testHunk)}, o); err == nil {
 			t.Errorf("%s: no error", name)
+		}
+	}
+}
+
+// Hunks that repeat an earlier one are not compressed at all, so a large
+// image of zeros costs about one hunk of codec work.
+func TestWriteSkipsCompressingDuplicates(t *testing.T) {
+	o := opts(format.CodecLZMA)
+	o.HunkBytes = 1 << 20
+	o.Workers = 1
+	data := make([]byte, 48<<20)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	path, _, _ := writeCHD(t, data, o)
+	runtime.ReadMemStats(&after)
+	grew := (after.TotalAlloc - before.TotalAlloc) >> 20
+	t.Logf("allocated %d MiB", grew)
+	if grew > 128 {
+		t.Errorf("allocated %d MiB writing %d MiB of zeros", grew, len(data)>>20)
+	}
+	_, entries, _ := readBack(t, path)
+	for i, e := range entries[1:] {
+		if e.Type != format.CompSelf || e.Offset != 0 {
+			t.Fatalf("hunk %d = %+v, want a reference to hunk 0", i+1, e)
 		}
 	}
 }

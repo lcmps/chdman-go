@@ -108,6 +108,13 @@ type writer struct {
 
 	rawHash hash.Hash // compressed files only
 	pool    sync.Pool // *[]byte of HunkBytes capacity
+
+	// seen maps the identity of each hunk stored so far to its index. Only the
+	// sink writes it; workers read it to skip compressing a hunk that an
+	// earlier one already holds. The first occurrence of a hunk always reaches
+	// the sink before any later copy, so the output does not depend on timing.
+	seenMu sync.RWMutex
+	seen   map[dedupeKey]uint32
 }
 
 func (w *writer) getBuf() *[]byte {
@@ -190,7 +197,7 @@ func (w *writer) run(ctx context.Context) (rawSHA1, sha [20]byte, err error) {
 
 	var entries []format.MapEntry // compressed files
 	var rawMap []byte             // uncompressed files: 4 bytes per hunk
-	seen := map[dedupeKey]uint32{}
+	w.seen = map[dedupeKey]uint32{}
 	if compressed {
 		entries = make([]format.MapEntry, 0, hunkCount)
 	} else {
@@ -209,11 +216,16 @@ func (w *writer) run(ctx context.Context) (rawSHA1, sha [20]byte, err error) {
 		var err error
 		if compressed {
 			var e format.MapEntry
-			if ref, ok := seen[dedupeKey{s.crc, s.sum}]; ok {
+			w.seenMu.RLock()
+			ref, ok := w.seen[dedupeKey{s.crc, s.sum}]
+			w.seenMu.RUnlock()
+			if ok {
 				e = format.MapEntry{Type: format.CompSelf, Offset: uint64(ref)}
 			} else {
 				e = format.MapEntry{Type: s.typ, CompLen: uint32(len(s.data)), Offset: w.pos, CRC16: s.crc}
-				seen[dedupeKey{s.crc, s.sum}] = index
+				w.seenMu.Lock()
+				w.seen[dedupeKey{s.crc, s.sum}] = index
+				w.seenMu.Unlock()
 				err = w.write(s.data)
 			}
 			entries = append(entries, e)
@@ -306,6 +318,13 @@ func (w *writer) newWorker(compressed bool) func() (func(hunk) (stored, error), 
 		return func(h hunk) (stored, error) {
 			data := *h.buf
 			s := stored{crc: format.CRC16(data), sum: sha1.Sum(data)}
+			w.seenMu.RLock()
+			_, dup := w.seen[dedupeKey{s.crc, s.sum}]
+			w.seenMu.RUnlock()
+			if dup { // the sink will store a reference, not these bytes
+				s.buf = h.buf
+				return s, nil
+			}
 			typ, best, err := group.Best(data)
 			if err != nil {
 				return stored{}, err
