@@ -109,10 +109,12 @@ func readCompressedMap(r io.ReaderAt, h Header, fileSize int64) ([]MapEntry, err
 	if lengthBits > 32 || selfBits > 32 || parentBits > 48 {
 		return nil, corrupt("bad map field widths %d/%d/%d", lengthBits, selfBits, parentBits)
 	}
-	// Every hunk needs at least a share of one RLE code, so a map cannot
-	// describe more hunks than its bits allow; this bounds the allocation.
+	// An RLE_LARGE group (three codes of at least one bit each) is the
+	// cheapest way to describe hunks: maxRLERun of them. A map of all-zero or
+	// all-self hunks really is that small, so this bound is loose by design;
+	// the decoding below commits memory only as map bits are consumed.
 	count := uint64(h.HunkCount())
-	if count > (uint64(mapBytes)*8+1)*maxRLERun {
+	if count > (uint64(mapBytes)*8/3+1)*maxRLERun {
 		return nil, corrupt("map of %d bytes cannot describe %d hunks", mapBytes, count)
 	}
 	body := make([]byte, mapBytes)
@@ -126,14 +128,15 @@ func readCompressedMap(r io.ReaderAt, h Header, fileSize int64) ([]MapEntry, err
 	}
 
 	// First decode the per-hunk types, undoing the RLE.
-	types := make([]uint8, count)
+	// The slices grow as bits are consumed, not to the count the header
+	// claims, so a header that overstates the hunks costs only the map's size.
+	var types []uint8
 	var last uint8
 	rep := 0
-	for i := range types {
-		switch {
-		case rep > 0:
+	for uint64(len(types)) < count {
+		if rep > 0 {
 			rep--
-		default:
+		} else {
 			switch v := uint8(dec.Decode(br)); v {
 			case compRLESmall:
 				rep = 2 + int(dec.Decode(br))
@@ -143,12 +146,15 @@ func readCompressedMap(r io.ReaderAt, h Header, fileSize int64) ([]MapEntry, err
 			default:
 				last = v
 			}
+			if br.Overflow() {
+				return nil, corrupt("map data ended early")
+			}
 		}
-		types[i] = last
+		types = append(types, last)
 	}
 
 	// Then the per-type payload.
-	entries := make([]MapEntry, count)
+	entries := make([]MapEntry, 0, min(count, 1<<16))
 	cur := firstOffset
 	var lastSelf uint32
 	for i, typ := range types {
@@ -184,7 +190,10 @@ func readCompressedMap(r io.ReaderAt, h Header, fileSize int64) ([]MapEntry, err
 		} else if e.Offset > uint64(fileSize) || uint64(e.CompLen) > uint64(fileSize)-e.Offset {
 			return nil, corrupt("hunk %d at %d+%d is past the end of the file", i, e.Offset, e.CompLen)
 		}
-		entries[i] = e
+		if br.Overflow() {
+			return nil, corrupt("map data ended early")
+		}
+		entries = append(entries, e)
 	}
 	if br.Overflow() {
 		return nil, corrupt("map data ended early")
