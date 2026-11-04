@@ -13,13 +13,21 @@ import (
 	"github.com/lcmps/chdman-go/internal/testsupport/testimg"
 )
 
+// maxExercisedHunks bounds the work exercise does: a mutated header may claim
+// millions of hunks, and decoding them all would stall the fuzzer.
+const maxExercisedHunks = 1 << 12
+
 // exercise opens data, reads all of it and verifies it. It must never panic.
+// A file that claims more than maxExercisedHunks hunks is only opened.
 func exercise(data []byte) (openErr, useErr error) {
 	r, err := NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return err, nil
 	}
 	defer r.Close()
+	if r.Info().HunkCount > maxExercisedHunks {
+		return nil, nil
+	}
 	n := r.Info().LogicalBytes
 	buf := make([]byte, min(n, 1<<20))
 	for off := uint64(0); off < n && useErr == nil; off += uint64(len(buf)) {
@@ -141,7 +149,14 @@ func hostileRLEMap(t *testing.T) {
 	}
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	openErr, useErr := exercise(file)
+	var openErr, useErr error
+	if r, err := NewReader(bytes.NewReader(file), int64(len(file))); err != nil {
+		openErr = err
+	} else {
+		_, useErr = r.ReadAt(make([]byte, 1), 0) // hunk 0 is the garbage one
+		_, verr := r.Verify(context.Background(), VerifyOptions{Workers: 2})
+		useErr = firstErr(useErr, verr)
+	}
 	runtime.ReadMemStats(&after)
 	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 64<<20 {
 		t.Errorf("allocated %d MiB for a %d byte file", alloc>>20, len(file))
