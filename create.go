@@ -230,7 +230,7 @@ func CreateCD(ctx context.Context, cuePath, outPath string, opts CreateOptions) 
 		return CreateResult{}, err
 	}
 	toc, srcs, warns := cue.TOC, cue.Sources, cue.Warnings
-	inputs, err := checkCueBins(toc, srcs, cuePath)
+	inputs, err := checkCueBins(toc, srcs, cuePath, cue.Files)
 	if err != nil {
 		return CreateResult{}, err
 	}
@@ -267,8 +267,9 @@ func CreateCD(ctx context.Context, cuePath, outPath string, opts CreateOptions) 
 
 // checkCueBins makes sure that every track's frames lie within its bin, so a
 // short file fails before anything is written, and returns the paths that the
-// output must not overwrite: the cue and each distinct bin.
-func checkCueBins(toc cdrom.TOC, srcs []cdrom.TrackSource, cuePath string) ([]string, error) {
+// output must not overwrite: the cue and each bin that it names, which
+// includes one that no track reads.
+func checkCueBins(toc cdrom.TOC, srcs []cdrom.TrackSource, cuePath string, files []string) ([]string, error) {
 	inputs := []string{cuePath}
 	sizes := map[string]uint64{}
 	for i, s := range srcs {
@@ -283,11 +284,17 @@ func checkCueBins(toc cdrom.TOC, srcs []cdrom.TrackSource, cuePath string) ([]st
 			}
 			size = uint64(st.Size())
 			sizes[s.Path] = size
-			inputs = append(inputs, s.Path)
 		}
 		t := toc.Tracks[i]
 		if end := s.Offset + uint64(s.Frames)*uint64(t.DataSize+t.SubSize); end > size {
 			return nil, fmt.Errorf("%w: track %d needs %d bytes of %s, which has %d", chderr.InvalidCue, i+1, end, s.Path, size)
+		}
+	}
+	for _, name := range files {
+		// A file that is named and missing is no input, and no error: chdman
+		// does not look at a file that no track reads.
+		if _, err := os.Stat(name); err == nil {
+			inputs = append(inputs, name)
 		}
 	}
 	return inputs, nil

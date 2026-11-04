@@ -475,3 +475,27 @@ REM SESSION 02
 		}
 	}
 }
+
+// Every file that the cue names is an input, even one that no track reads:
+// chdman-go does not replace it.
+func TestCreateCDRefusesToOverwriteAnUnreadBin(t *testing.T) {
+	dir := t.TempDir()
+	testimg.Bin(t, dir, "a.bin", testimg.Track{Mode: "MODE1/2352", Frames: 20, Shape: testimg.Mixed})
+	b := testimg.Bin(t, dir, "b.bin", testimg.Track{Mode: "AUDIO", Frames: 20, Shape: testimg.Mixed})
+	cue := testimg.WriteCue(t, dir, "d.cue", "FILE \"a.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\nFILE \"b.bin\" BINARY\n")
+	orig, err := os.ReadFile(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateCD(context.Background(), cue, b, CreateOptions{Force: true}); err == nil {
+		t.Fatal("replaced a file that the cue names")
+	}
+	if got, _ := os.ReadFile(b); !bytes.Equal(got, orig) {
+		t.Error("the bin was modified")
+	}
+	// A missing file that is named is not an input and not an error.
+	missing := testimg.WriteCue(t, dir, "m.cue", "FILE \"a.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\nFILE \"gone.bin\" BINARY\n")
+	if _, err := CreateCD(context.Background(), missing, filepath.Join(dir, "m.chd"), CreateOptions{}); err != nil {
+		t.Errorf("missing unread bin: %v", err)
+	}
+}
