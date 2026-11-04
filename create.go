@@ -52,6 +52,8 @@ const (
 	WarnTrailingBytesDropped WarningKind = "trailing-bytes-dropped"
 	WarnFramesOverwritten    WarningKind = "frames-overwritten"
 	WarnOffsetTruncated      WarningKind = "track-offset-truncated"
+	WarnFileUnused           WarningKind = "file-unused"
+	WarnFramesDropped        WarningKind = "frames-dropped"
 	WarnSubcodeOmitted       WarningKind = "subcode-omitted"
 )
 
@@ -221,10 +223,11 @@ func CreateCD(ctx context.Context, cuePath, outPath string, opts CreateOptions) 
 	if err != nil {
 		return CreateResult{}, err
 	}
-	toc, srcs, warns, err := cdrom.ParseCue(cuePath)
+	cue, err := cdrom.ParseCue(cuePath)
 	if err != nil {
 		return CreateResult{}, err
 	}
+	toc, srcs, warns := cue.TOC, cue.Sources, cue.Warnings
 	inputs, err := checkCueBins(toc, srcs, cuePath)
 	if err != nil {
 		return CreateResult{}, err

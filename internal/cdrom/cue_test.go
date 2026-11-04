@@ -90,7 +90,8 @@ func assertCueMatchesChdman(t *testing.T, cue string) (cdrom.TOC, []cdrom.TrackS
 	t.Helper()
 	oracle.Require(t)
 	hdr, entries, chdErr := chdmanCreate(t, cue)
-	toc, srcs, warns, err := cdrom.ParseCue(cue)
+	c, err := cdrom.ParseCue(cue)
+	toc, srcs, warns := c.TOC, c.Sources, c.Warnings
 	if chdErr != nil {
 		if err == nil {
 			t.Fatalf("chdman rejects the cue (%v) but ParseCue accepts it", chdErr)
@@ -377,7 +378,7 @@ FILE "t2.bin" BINARY
 func TestCueRejections(t *testing.T) {
 	for _, r := range rejections() {
 		t.Run(r.name, func(t *testing.T) {
-			_, _, _, err := cdrom.ParseCue(r.cue(t))
+			_, err := cdrom.ParseCue(r.cue(t))
 			if err == nil {
 				t.Fatal("ParseCue accepted the cue")
 			}
@@ -392,7 +393,7 @@ func TestCueRejections(t *testing.T) {
 				if r.name != name {
 					continue
 				}
-				_, _, _, err := cdrom.ParseCue(r.cue(t))
+				_, err := cdrom.ParseCue(r.cue(t))
 				if err == nil || !strings.Contains(strings.ToLower(err.Error()), name) {
 					t.Errorf("%s: error %v does not name it", name, err)
 				}
@@ -400,7 +401,7 @@ func TestCueRejections(t *testing.T) {
 		}
 	})
 	t.Run("missing-cue", func(t *testing.T) {
-		_, _, _, err := cdrom.ParseCue(filepath.Join(t.TempDir(), "none.cue"))
+		_, err := cdrom.ParseCue(filepath.Join(t.TempDir(), "none.cue"))
 		if !errors.Is(err, chderr.InvalidCue) || !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("error %v, want InvalidCue and ErrNotExist", err)
 		}
@@ -442,10 +443,10 @@ func TestCueWarnings(t *testing.T) {
 	}
 
 	t.Run("clean", func(t *testing.T) {
-		_, _, warns, err := cdrom.ParseCue(testimg.Cue(t, t.TempDir(), testimg.Disc{Tracks: []testimg.Track{
+		c, err := cdrom.ParseCue(testimg.Cue(t, t.TempDir(), testimg.Disc{Tracks: []testimg.Track{
 			{Mode: "MODE1/2352", Frames: 8, Shape: mixed}, {Mode: "AUDIO", Frames: 6, Shape: mixed}}}))
-		if err != nil || len(warns) != 0 {
-			t.Fatalf("err = %v, warnings = %v", err, warns)
+		if err != nil || len(c.Warnings) != 0 {
+			t.Fatalf("err = %v, warnings = %v", err, c.Warnings)
 		}
 	})
 	t.Run("trailing-bytes-single-track", func(t *testing.T) {
@@ -493,6 +494,97 @@ REM SESSION 02
 			t.Fatalf("warnings = %+v", warns)
 		}
 	})
+	// A track's file is fixed when its TRACK command comes, so a bin that a
+	// later FILE names is never read.
+	unused := func(t *testing.T, cue string, want ...string) {
+		t.Helper()
+		var got []string
+		for _, w := range oracleCheck(t, cue) {
+			if w.Kind == cdrom.WarnFileUnused {
+				got = append(got, filepath.Base(strings.Fields(w.Message)[0]))
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("unused files warned about = %v, want %v", got, want)
+		}
+	}
+	twoBins := func(t *testing.T) string {
+		dir := t.TempDir()
+		testimg.Bin(t, dir, "a.bin", testimg.Track{Mode: "MODE1/2352", Frames: 60, Shape: mixed})
+		testimg.Bin(t, dir, "b.bin", testimg.Track{Mode: "AUDIO", Frames: 50, Shape: mixed})
+		return dir
+	}
+	t.Run("file-after-the-last-track", func(t *testing.T) {
+		dir := twoBins(t)
+		unused(t, testimg.WriteCue(t, dir, "d.cue", "FILE \"a.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\nFILE \"b.bin\" BINARY\n"), "b.bin")
+	})
+	t.Run("file-after-file", func(t *testing.T) {
+		dir := twoBins(t)
+		unused(t, testimg.WriteCue(t, dir, "d.cue", "FILE \"b.bin\" BINARY\nFILE \"a.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n"), "b.bin")
+	})
+	t.Run("file-between-track-and-index", func(t *testing.T) {
+		dir := twoBins(t)
+		unused(t, testimg.WriteCue(t, dir, "d.cue", "FILE \"a.bin\" BINARY\n  TRACK 01 MODE1/2352\nFILE \"b.bin\" BINARY\n    INDEX 01 00:00:00\n"), "b.bin")
+	})
+	t.Run("two-unused-files", func(t *testing.T) {
+		dir := twoBins(t)
+		testimg.Bin(t, dir, "c.bin", testimg.Track{Mode: "AUDIO", Frames: 20, Shape: mixed})
+		unused(t, testimg.WriteCue(t, dir, "d.cue", "FILE \"c.bin\" BINARY\nFILE \"b.bin\" BINARY\nFILE \"a.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n"), "c.bin", "b.bin")
+	})
+	t.Run("unused-file-without-data-is-clean", func(t *testing.T) {
+		dir := twoBins(t)
+		if err := os.WriteFile(filepath.Join(dir, "empty.bin"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		unused(t, testimg.WriteCue(t, dir, "d.cue", "FILE \"a.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\nFILE \"empty.bin\" BINARY\nFILE \"gone.bin\" BINARY\n"))
+	})
+	t.Run("used-files-are-clean", func(t *testing.T) {
+		dir := twoBins(t)
+		// A file named twice, and a file named before the track that reads it.
+		unused(t, testimg.WriteCue(t, dir, "d.cue", `FILE "a.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+FILE "a.bin" BINARY
+  TRACK 02 AUDIO
+    INDEX 01 00:00:30
+FILE "b.bin" BINARY
+  TRACK 03 AUDIO
+    INDEX 01 00:00:00
+`))
+	})
+
+	// The last track of a single-bin multisession cue ends at its own
+	// lead-out, and the rest of the bin is dropped.
+	for _, ext := range []string{"bin", "img"} {
+		t.Run("last-track-trimmed-"+ext, func(t *testing.T) {
+			dir := t.TempDir()
+			testimg.Bin(t, dir, "disc."+ext, testimg.Track{Mode: "MODE1/2352", Frames: 2000, Shape: mixed})
+			cue := testimg.WriteCue(t, dir, "s.cue", fmt.Sprintf(`FILE "disc.%s" BINARY
+REM SESSION 01
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+  REM LEAD-OUT 00:05:00
+REM SESSION 02
+  TRACK 02 MODE1/2352
+    INDEX 00 00:06:00
+    INDEX 01 00:06:00
+  REM LEAD-OUT 00:10:00
+`, ext))
+			_, _, warns := assertCueMatchesChdman(t, cue)
+			var dropped []cdrom.Warning
+			for _, w := range warns {
+				if w.Kind == cdrom.WarnFramesDropped {
+					dropped = append(dropped, w)
+				}
+			}
+			// Track 1 keeps 375 frames, so track 2 starts at frame 375 of the
+			// bin and ends 300 frames later, at its lead-out. What follows up
+			// to frame 2000 is never read.
+			if len(dropped) != 1 || dropped[0].Track != 2 || !strings.Contains(dropped[0].Message, " 1325 frames") {
+				t.Errorf("want one warning for track 2 about 1325 frames, got %+v", dropped)
+			}
+		})
+	}
 	t.Run("lead-out-with-img-is-clean", func(t *testing.T) {
 		dir := t.TempDir()
 		concatBin(t, dir, "disc.img", testimg.Track{Mode: "MODE1/2352", Frames: 20, Shape: mixed}, testimg.Track{Mode: "AUDIO", Frames: 20, Shape: mixed})
@@ -528,7 +620,8 @@ FILE "d.bin" MOTOROLA
   TRACK 04 AUDIO
     INDEX 01 00:00:00
 `)
-	_, srcs, _, err := cdrom.ParseCue(cue)
+	c, err := cdrom.ParseCue(cue)
+	srcs := c.Sources
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +637,8 @@ func TestParseCueSources(t *testing.T) {
 	dir := t.TempDir()
 	cue := testimg.Cue(t, dir, testimg.Disc{Tracks: []testimg.Track{
 		{Mode: "MODE1/2352", Frames: 20}, {Mode: "AUDIO", Frames: 10}}})
-	toc, srcs, _, err := cdrom.ParseCue(cue)
+	c, err := cdrom.ParseCue(cue)
+	toc, srcs := c.TOC, c.Sources
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -621,7 +715,8 @@ func bigTrackCue(t *testing.T) string {
 // bits, so track 2 starts 4,704,000,000 mod 2^32 bytes into the bin.
 func TestCuePreviousTrackSizeWraps(t *testing.T) {
 	cue := bigTrackCue(t)
-	toc, srcs, warns, err := cdrom.ParseCue(cue)
+	c, err := cdrom.ParseCue(cue)
+	toc, srcs, warns := c.TOC, c.Sources, c.Warnings
 	if err != nil {
 		t.Fatal(err)
 	}

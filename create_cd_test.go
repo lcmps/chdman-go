@@ -178,6 +178,40 @@ REM SESSION 02
 	})
 }
 
+func TestCreateCDWarnsAboutDroppedInput(t *testing.T) {
+	oracle.Require(t)
+	t.Run("unused file", func(t *testing.T) {
+		dir := t.TempDir()
+		testimg.Bin(t, dir, "a.bin", testimg.Track{Mode: "MODE1/2352", Frames: 60, Shape: testimg.Mixed})
+		testimg.Bin(t, dir, "b.bin", testimg.Track{Mode: "AUDIO", Frames: 50, Shape: testimg.Mixed})
+		cue := testimg.WriteCue(t, dir, "d.cue", "FILE \"a.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\nFILE \"b.bin\" BINARY\n")
+		res := assertCreateCDMatches(t, cue, CreateOptions{}, "", 0)
+		if len(res.Warnings) != 1 || res.Warnings[0].Kind != WarnFileUnused || !strings.Contains(res.Warnings[0].Message, "b.bin") {
+			t.Errorf("warnings %+v", res.Warnings)
+		}
+	})
+	t.Run("last track trimmed to its lead-out", func(t *testing.T) {
+		dir := t.TempDir()
+		testimg.Bin(t, dir, "disc.img", testimg.Track{Mode: "MODE1/2352", Frames: 2000, Shape: testimg.Mixed})
+		cue := testimg.WriteCue(t, dir, "s.cue", `FILE "disc.img" BINARY
+REM SESSION 01
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+  REM LEAD-OUT 00:05:00
+REM SESSION 02
+  TRACK 02 MODE1/2352
+    INDEX 00 00:06:00
+    INDEX 01 00:06:00
+  REM LEAD-OUT 00:10:00
+`)
+		res := assertCreateCDMatches(t, cue, CreateOptions{}, "", 0)
+		if len(res.Warnings) != 1 || res.Warnings[0].Kind != WarnFramesDropped || res.Warnings[0].Track != 2 ||
+			!strings.Contains(res.Warnings[0].Message, "1325 frames") {
+			t.Errorf("warnings %+v", res.Warnings)
+		}
+	})
+}
+
 func TestCreateCDZeroByteBin(t *testing.T) {
 	oracle.Require(t)
 	dir := t.TempDir()

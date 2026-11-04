@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/lcmps/chdman-go/internal/chderr"
@@ -38,6 +39,12 @@ const (
 	// the same bin: chdman computes the raw size of that track in 32 bits, so
 	// it starts reading the wrong bytes.
 	WarnOffsetTruncated = "track-offset-truncated"
+	// WarnFileUnused is a FILE that no track reads, and that is not empty:
+	// chdman ignores all of its data.
+	WarnFileUnused = "file-unused"
+	// WarnFramesDropped is the end of the bin of the last track of a
+	// single-bin multisession cue, after its REM LEAD-OUT: chdman ignores it.
+	WarnFramesDropped = "frames-dropped"
 	// WarnFramesOverwritten is a single-bin multisession cue with REM
 	// LEAD-OUT and a non-.img file: chdman writes zeros over real frames.
 	WarnFramesOverwritten = "frames-overwritten"
@@ -82,18 +89,29 @@ func (c *cueTrack) reset() {
 	}
 }
 
-// ParseCue reads a cue sheet the way chdman 0.289 does and returns the
-// table of contents, where each track's data comes from, and warnings about
-// data that chdman drops or overwrites. Errors wrap chderr.InvalidCue, except
-// for the GD-ROM multi-cue layout, which wraps chderr.UnsupportedDiscType.
-func ParseCue(path string) (TOC, []TrackSource, []Warning, error) {
+// Cue is what chdman makes of a cue sheet.
+type Cue struct {
+	TOC TOC
+	// Sources says where the data of each track comes from.
+	Sources []TrackSource
+	// Files is every file that a FILE command names, in order and without
+	// repeats, whether or not a track reads it.
+	Files []string
+	// Warnings describe data that chdman drops or overwrites.
+	Warnings []Warning
+}
+
+// ParseCue reads a cue sheet the way chdman 0.289 does. Errors wrap
+// chderr.InvalidCue, except for the GD-ROM multi-cue layout, which wraps
+// chderr.UnsupportedDiscType.
+func ParseCue(path string) (Cue, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return TOC{}, nil, nil, fmt.Errorf("%w: %w", chderr.InvalidCue, err)
+		return Cue{}, fmt.Errorf("%w: %w", chderr.InvalidCue, err)
 	}
 	lines := cueLines(data)
 	if isGDICue(lines) {
-		return TOC{}, nil, nil, fmt.Errorf("%w: %s is a GD-ROM multi-cue", chderr.UnsupportedDiscType, path)
+		return Cue{}, fmt.Errorf("%w: %s is a GD-ROM multi-cue", chderr.UnsupportedDiscType, path)
 	}
 	p := cueParser{dir: filePath(path), trknum: -1, leadin: -1}
 	for i := range p.info {
@@ -102,7 +120,7 @@ func ParseCue(path string) (TOC, []TrackSource, []Warning, error) {
 	p.beforeInfo.reset()
 	for _, line := range lines {
 		if err := p.line(line); err != nil {
-			return TOC{}, nil, nil, err
+			return Cue{}, err
 		}
 	}
 	return p.finish()
@@ -125,6 +143,7 @@ type cueParser struct {
 	sessionPre int
 	leadin     int
 	lastfname  string
+	files      []string
 	isMultibin bool
 	warnings   []Warning
 }
@@ -213,6 +232,9 @@ func (p *cueParser) rem(l *cueLine) error {
 
 func (p *cueParser) file(l *cueLine) error {
 	name := p.dir + l.token()
+	if !slices.Contains(p.files, name) {
+		p.files = append(p.files, name)
+	}
 	if !p.isMultibin {
 		prev := p.lastfname
 		p.lastfname = name
@@ -277,10 +299,10 @@ func (p *cueParser) track(l *cueLine) error {
 }
 
 // finish sets the track lengths and offsets, the second half of parse_cue.
-func (p *cueParser) finish() (TOC, []TrackSource, []Warning, error) {
+func (p *cueParser) finish() (Cue, error) {
 	numtrks := p.trknum + 1
 	if numtrks == 0 {
-		return TOC{}, nil, nil, invalid("no tracks")
+		return Cue{}, invalid("no tracks")
 	}
 	tracks, info := p.tracks[:numtrks], p.info[:numtrks]
 	bytesPerFrame := func(i int) uint64 { return uint64(tracks[i].DataSize + tracks[i].SubSize) }
@@ -288,7 +310,7 @@ func (p *cueParser) finish() (TOC, []TrackSource, []Warning, error) {
 	for n := range numtrks {
 		t, in := &tracks[n], &info[n]
 		if in.idx[1] == -1 {
-			return TOC{}, nil, nil, invalid("track %d is missing its INDEX 01 marker", n+1)
+			return Cue{}, invalid("track %d is missing its INDEX 01 marker", n+1)
 		}
 		// True for cue/bin and cue/iso.
 		if t.Type == AUDIO {
@@ -303,11 +325,11 @@ func (p *cueParser) finish() (TOC, []TrackSource, []Warning, error) {
 			// The last track shares its bin with the one before it.
 			tlen := fileSize(in.fname)
 			if tlen == 0 {
-				return TOC{}, nil, nil, missingBin(in.fname)
+				return Cue{}, missingBin(in.fname)
 			}
 			in.offset = info[n-1].offset + p.previousRawSize(n)
 			if in.offset > tlen {
-				return TOC{}, nil, nil, invalid("track %d starts past the end of %s", n+1, in.fname)
+				return Cue{}, invalid("track %d starts past the end of %s", n+1, in.fname)
 			}
 			t.Frames = uint32((tlen - in.offset) / bps)
 			p.trailing(n, (tlen-in.offset)%bps)
@@ -315,7 +337,7 @@ func (p *cueParser) finish() (TOC, []TrackSource, []Warning, error) {
 			// The next track is in the same bin.
 			diff := info[n+1].idx[0] - in.idx[0]
 			if diff <= 0 {
-				return TOC{}, nil, nil, invalid("unable to determine the size of track %d, missing INDEX 01 markers?", n+1)
+				return Cue{}, invalid("unable to determine the size of track %d, missing INDEX 01 markers?", n+1)
 			}
 			t.Frames = uint32(diff)
 			if n > 0 {
@@ -325,7 +347,7 @@ func (p *cueParser) finish() (TOC, []TrackSource, []Warning, error) {
 			// The tracks are in different files.
 			tlen := fileSize(in.fname)
 			if tlen == 0 {
-				return TOC{}, nil, nil, missingBin(in.fname)
+				return Cue{}, missingBin(in.fname)
 			}
 			t.Frames = uint32(tlen / bps)
 			in.offset = 0
@@ -356,6 +378,9 @@ func (p *cueParser) finish() (TOC, []TrackSource, []Warning, error) {
 			// lead-out instead of the idx 0 of the next track.
 			end := int32(in.leadout) - int32(in.idx[0])
 			if t.Frames >= uint32(end) {
+				if last {
+					p.trimmed(n, t.Frames-uint32(end))
+				}
 				t.Frames = uint32(end)
 				if !last {
 					// The lead-out becomes the gap between it and the next
@@ -387,7 +412,37 @@ func (p *cueParser) finish() (TOC, []TrackSource, []Warning, error) {
 		srcs[i] = TrackSource{Path: info[i].fname, Offset: info[i].offset, Swap: info[i].swap, Frames: read, Pad: t.Frames - read}
 	}
 	setOffsets(toc.Tracks)
-	return toc, srcs, p.warnings, nil
+	p.unusedFiles(info)
+	return Cue{TOC: toc, Sources: srcs, Files: p.files, Warnings: p.warnings}, nil
+}
+
+// unusedFiles warns about each file that a FILE names and no track reads, and
+// that has data to lose.
+func (p *cueParser) unusedFiles(info []cueTrack) {
+	for _, name := range p.files {
+		if slices.ContainsFunc(info, func(c cueTrack) bool { return c.fname == name }) {
+			continue
+		}
+		if size := fileSize(name); size > 0 {
+			p.warnings = append(p.warnings, Warning{
+				Kind:    WarnFileUnused,
+				Message: fmt.Sprintf("%s is not used by any track, so chdman ignores its %d bytes", name, size),
+			})
+		}
+	}
+}
+
+// trimmed warns that a lead-out time on the last track drops the frames of
+// its bin that follow it.
+func (p *cueParser) trimmed(n int, frames uint32) {
+	if frames == 0 {
+		return
+	}
+	p.warnings = append(p.warnings, Warning{
+		Kind:    WarnFramesDropped,
+		Track:   n + 1,
+		Message: fmt.Sprintf("track %d: chdman drops the last %d frames of %s, which come after its REM LEAD-OUT", n+1, frames, p.info[n].fname),
+	})
 }
 
 // framesRead is how many of the frames of t, whose data starts at offset in
