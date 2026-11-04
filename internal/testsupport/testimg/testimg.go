@@ -33,8 +33,9 @@ const (
 const RepeatBlock = 64
 
 const (
-	isoSector = 2048
-	rawSector = cdrom.SectorSize
+	isoSector  = 2048
+	mode2Plain = 2336
+	rawSector  = cdrom.SectorSize
 )
 
 // Track describes one cue track. Frames is the number of frames the track
@@ -120,6 +121,31 @@ func Cue(t testing.TB, dir string, d Disc) string {
 	return path
 }
 
+// Bin writes the frames of one track to dir/name and returns its path. The
+// content is the same as Cue generates for a track at the start of the disc.
+func Bin(t testing.TB, dir, name string, tr Track) string {
+	t.Helper()
+	var bin []byte
+	for i := range tr.Frames {
+		bin = append(bin, sector(t, tr, i, i)...)
+	}
+	path := filepath.Join(dir, name)
+	write(t, path, bin)
+	return path
+}
+
+// WriteCue writes text verbatim to dir/name, for cue layouts that Cue cannot
+// express, and returns its path. name may contain subdirectories of dir.
+func WriteCue(t testing.TB, dir, name, text string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, path, []byte(text))
+	return path
+}
+
 // rawSectorFor returns the byte size of one sector of the track's mode.
 func rawSectorFor(t testing.TB, tr Track) int {
 	t.Helper()
@@ -128,6 +154,8 @@ func rawSectorFor(t testing.TB, tr Track) int {
 		return rawSector
 	case "MODE1/2048":
 		return isoSector
+	case "MODE2/2336":
+		return mode2Plain
 	}
 	t.Fatalf("testimg: unsupported track mode %q", tr.Mode)
 	return 0
@@ -136,7 +164,7 @@ func rawSectorFor(t testing.TB, tr Track) int {
 // sector builds frame i of a track; lba is its absolute frame number.
 func sector(t testing.TB, tr Track, i, lba int) []byte {
 	size := rawSectorFor(t, tr)
-	if tr.Mode == "AUDIO" || tr.Mode == "MODE1/2048" || tr.Shape == Random {
+	if tr.Mode == "AUDIO" || tr.Mode == "MODE1/2048" || tr.Mode == "MODE2/2336" || tr.Shape == Random {
 		return payload(tr.Shape, lba, size)
 	}
 	mode := byte(1)
