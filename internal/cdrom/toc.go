@@ -167,11 +167,18 @@ func ParseMetadata(entries []format.MetadataEntry) (TOC, error) {
 	if len(parsed) == 0 {
 		return TOC{}, fmt.Errorf("%w: no CD track metadata", chderr.CorruptData)
 	}
+	// The numbers must be 1 to len(parsed), each once: anything else leaves a
+	// track that was never filled in.
 	toc.Tracks = make([]Track, len(parsed))
+	seen := make([]bool, len(parsed))
 	for _, p := range parsed {
 		if p.num == 0 || p.num > len(parsed) {
 			return TOC{}, fmt.Errorf("%w: track number %d out of range", chderr.CorruptData, p.num)
 		}
+		if seen[p.num-1] {
+			return TOC{}, fmt.Errorf("%w: track number %d appears twice", chderr.CorruptData, p.num)
+		}
+		seen[p.num-1] = true
 		toc.Tracks[p.num-1] = p.track
 	}
 	setOffsets(toc.Tracks)

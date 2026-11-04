@@ -297,6 +297,34 @@ func TestExtractCDRejects(t *testing.T) {
 		}
 	}
 
+	// Metadata that numbers two tracks alike used to divide by the data size
+	// of the track that was never filled in.
+	dup := filepath.Join(dir, "dup.chd")
+	f, err = os.Create(dup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	track := []byte("TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:8 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\x00")
+	_, _, err = chdwriter.Write(ctx, f, zeroSource{}, chdwriter.Options{
+		HunkBytes: 19584, UnitBytes: 2448, LogicalBytes: 2 * 19584,
+		Metadata: []format.MetadataEntry{
+			{Tag: format.TagCHT2, Flags: format.FlagChecksum, Data: track},
+			{Tag: format.TagCHT2, Flags: format.FlagChecksum, Data: track},
+		},
+		Workers: 1,
+	})
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dupOut := t.TempDir()
+	if _, err := ExtractCD(ctx, dup, filepath.Join(dupOut, "o.cue"), ExtractCDOptions{}); !errors.Is(err, chderr.CorruptData) {
+		t.Errorf("duplicate track numbers: err = %v, want ErrCorruptData", err)
+	}
+	if got := dirNames(t, dupOut); len(got) != 0 {
+		t.Errorf("duplicate track numbers left behind %v", got)
+	}
+
 	outDir := t.TempDir()
 	bad := []struct {
 		name string

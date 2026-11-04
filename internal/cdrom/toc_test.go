@@ -113,6 +113,23 @@ func TestParseMetadataRejects(t *testing.T) {
 			t.Errorf("%q: err = %v, want CorruptData", bad, err)
 		}
 	}
+	// Each number from 1 to the count must appear exactly once. A repeat
+	// leaves another number missing, and would give a track no data size.
+	for name, entries := range map[string][]format.MetadataEntry{
+		"duplicate": {
+			cht2("TRACK:1 TYPE:AUDIO SUBTYPE:NONE FRAMES:8 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0"),
+			cht2("TRACK:1 TYPE:AUDIO SUBTYPE:NONE FRAMES:8 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0"),
+		},
+		"missing": {
+			cht2("TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:8 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0"),
+			cht2("TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:8 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0"),
+			cht2("TRACK:3 TYPE:AUDIO SUBTYPE:NONE FRAMES:8 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0"),
+		},
+	} {
+		if _, err := ParseMetadata(entries); !errors.Is(err, chderr.CorruptData) {
+			t.Errorf("%s track numbers: err = %v, want CorruptData", name, err)
+		}
+	}
 	if _, err := ParseMetadata(nil); err == nil {
 		t.Error("no tracks: want an error")
 	}
