@@ -289,3 +289,47 @@ func TestCompressionOption(t *testing.T) {
 	wantCode(t, 0, "createcd", "-i", cue, "-o", out, "-c", "cdzl,cdlz,cdfl,cdzs,cdzl")
 	wantCode(t, 0, "createcd", "-f", "-i", cue, "-o", out, "-c", "cdzl,cdlz,cdfl,cdzs,bogus")
 }
+
+// A negative -np used to mean every processor without a word.
+func TestNegativeProcessorCountIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"verify", "-i", "x.chd", "-np", "-3"},
+		{"createdvd", "-i", "x.iso", "-o", filepath.Join(dir, "o.chd"), "--numprocessors", "-1"},
+		{"extractcd", "-i", "x.chd", "-o", filepath.Join(dir, "o.cue"), "-np", "-2"},
+		{"extractdvd", "-i", "x.chd", "-o", filepath.Join(dir, "o.iso"), "-np", "-2"},
+		{"createcd", "-i", "x.cue", "-o", filepath.Join(dir, "o.chd"), "-np", "-2"},
+	} {
+		_, errOut := wantCode(t, 1, args...)
+		if !strings.Contains(errOut, "must not be negative") {
+			t.Errorf("%v: stderr %q", args, errOut)
+		}
+	}
+}
+
+// The library reports after every hunk. The terminal gets a few updates a
+// second, plus the last one.
+func TestProgressIsThrottled(t *testing.T) {
+	var buf bytes.Buffer
+	now := time.Unix(0, 0)
+	cb, finish := newProgress(&buf, "Verifying", 250*time.Millisecond, func() time.Time { return now })
+	const total = 10_000
+	for i := uint64(1); i <= total; i++ {
+		now = now.Add(time.Millisecond) // 10 s in all
+		cb(i, total)
+	}
+	finish()
+	out := buf.String()
+	if n := strings.Count(out, "\r"); n < 30 || n > 60 {
+		t.Errorf("%d updates in 10 s, want about 40", n)
+	}
+	if !strings.Contains(out, "100.0% complete") || !strings.HasSuffix(out, "\n") {
+		t.Errorf("last update missing or the line is not ended: %q", out[max(0, len(out)-60):])
+	}
+	buf.Reset()
+	cb, finish = newProgress(&buf, "x", time.Second, func() time.Time { return now })
+	finish()
+	if buf.Len() != 0 {
+		t.Errorf("finish without progress wrote %q", buf.String())
+	}
+}

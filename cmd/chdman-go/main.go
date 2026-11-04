@@ -11,9 +11,11 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // Exit codes.
@@ -141,6 +143,14 @@ func (f *flags) parse(args []string, stderr io.Writer, required map[string]*stri
 		}
 		return exitFailure, false
 	}
+	for _, name := range []string{"np", "numprocessors"} {
+		if fl := f.Lookup(name); fl != nil && fl.Value.String() != "" {
+			if n, err := strconv.Atoi(fl.Value.String()); err == nil && n < 0 {
+				fmt.Fprintf(stderr, "chdman-go: -%s must not be negative (0 uses every processor), got %d\n", name, n)
+				return exitFailure, false
+			}
+		}
+	}
 	if f.NArg() > 0 {
 		fmt.Fprintf(stderr, "chdman-go: unexpected argument %q\n", f.Arg(0))
 		return exitFailure, false
@@ -178,6 +188,10 @@ func (f *flags) given(names ...string) bool {
 	return found
 }
 
+// progressInterval is the least time between two progress updates. The library
+// reports after every hunk, which is far more often than a terminal needs.
+const progressInterval = 250 * time.Millisecond
+
 // progress returns a progress callback and a function that ends the progress
 // line. It reports only when stderr is a terminal, so logs stay clean.
 func progress(stderr io.Writer, label string) (cb func(done, total uint64), finish func()) {
@@ -188,22 +202,43 @@ func progress(stderr io.Writer, label string) (cb func(done, total uint64), fini
 	if st, err := f.Stat(); err != nil || st.Mode()&os.ModeCharDevice == 0 {
 		return nil, func() {}
 	}
+	return newProgress(f, label, progressInterval, time.Now)
+}
+
+// newProgress writes the percentage done to w at most once per interval, and
+// the last update at finish, which also ends the line.
+func newProgress(w io.Writer, label string, interval time.Duration, now func() time.Time) (cb func(done, total uint64), finish func()) {
 	var mu sync.Mutex
+	var last time.Time
+	var pending string // the latest update that was not written
 	shown := false
+	write := func(line string) {
+		fmt.Fprint(w, line)
+		shown, pending = true, ""
+	}
 	cb = func(done, total uint64) {
 		if total == 0 {
 			return
 		}
+		line := fmt.Sprintf("\r%s, %.1f%% complete...", label, 100*float64(done)/float64(total))
 		mu.Lock()
 		defer mu.Unlock()
-		shown = true
-		fmt.Fprintf(f, "\r%s, %.1f%% complete...", label, 100*float64(done)/float64(total))
+		t := now()
+		if shown && t.Sub(last) < interval {
+			pending = line
+			return
+		}
+		last = t
+		write(line)
 	}
 	finish = func() {
 		mu.Lock()
 		defer mu.Unlock()
+		if pending != "" {
+			write(pending)
+		}
 		if shown {
-			fmt.Fprint(f, "\n")
+			fmt.Fprint(w, "\n")
 		}
 	}
 	return cb, finish
