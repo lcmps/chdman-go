@@ -201,7 +201,7 @@ func (w *writer) run(ctx context.Context) (rawSHA1, sha [20]byte, err error) {
 	if compressed {
 		entries = make([]format.MapEntry, 0, hunkCount)
 	} else {
-		rawMap = make([]byte, 4*int(hunkCount))
+		rawMap = make([]byte, 4*uint64(hunkCount))
 	}
 
 	workers := o.Workers
@@ -230,7 +230,7 @@ func (w *writer) run(ctx context.Context) (rawSHA1, sha [20]byte, err error) {
 			}
 			entries = append(entries, e)
 		} else if !s.zero {
-			binary.BigEndian.PutUint32(rawMap[4*index:], uint32(w.pos/uint64(o.HunkBytes)))
+			binary.BigEndian.PutUint32(rawMap[4*uint64(index):], uint32(w.pos/uint64(o.HunkBytes)))
 			err = w.write(s.data)
 		}
 		if err == nil && o.Progress != nil {
