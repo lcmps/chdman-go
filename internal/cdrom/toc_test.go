@@ -1,6 +1,7 @@
 package cdrom
 
 import (
+	"bytes"
 	"errors"
 	"reflect"
 	"testing"
@@ -148,6 +149,39 @@ func TestTypeFromCue(t *testing.T) {
 		typ, data, sub, ok := TypeFromCue(tc.in)
 		if typ != tc.typ || data != tc.data || sub != tc.sub || ok != tc.ok {
 			t.Errorf("TypeFromCue(%q) = (%v,%d,%d,%v), want (%v,%d,%d,%v)", tc.in, typ, data, sub, ok, tc.typ, tc.data, tc.sub, tc.ok)
+		}
+	}
+}
+
+// A pregap that chdman computed as INDEX 01 minus a later INDEX 00 is a
+// negative number stored in an unsigned field, and is written with %d.
+func TestNegativePregap(t *testing.T) {
+	entries := []format.MetadataEntry{
+		cht2("TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:60 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0"),
+		cht2("TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:100 PREGAP:-40 PGTYPE:VAUDIO PGSUB:NONE POSTGAP:0"),
+	}
+	toc, err := ParseMetadata(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := toc.Tracks[1].Pregap; got != 1<<32-40 {
+		t.Errorf("Pregap = %d, want %d", got, uint32(1<<32-40))
+	}
+	for i, e := range Metadata(toc) {
+		if !bytes.Equal(e.Data, entries[i].Data) {
+			t.Errorf("entry %d = %q, want %q", i+1, e.Data, entries[i].Data)
+		}
+	}
+	// The pregap is in the data, so INDEX 01 of track 2 is where track 1
+	// ends on the logical line, at 60.
+	for _, tc := range []struct {
+		lba   uint32
+		track int
+		frame uint64
+	}{{59, 0, 59}, {60, 1, 60}, {61, 1, 61}} {
+		loc, err := toc.Locate(tc.lba, false)
+		if err != nil || loc.Track != tc.track || loc.Zero || loc.Frame != tc.frame {
+			t.Errorf("Locate(%d) = %+v, %v; want track %d frame %d", tc.lba, loc, err, tc.track, tc.frame)
 		}
 	}
 }

@@ -45,21 +45,24 @@ func (t TOC) Locate(lba uint32, phys bool) (Location, error) {
 			}
 			continue
 		}
+		// All of this is uint32 arithmetic, as in cdrom.cpp: a pregap that
+		// chdman stored as a negative count wraps the offsets it implies.
+		//
 		// first is where the track's stored frames begin on the logical line.
-		first := int64(tr.LogFrameOfs)
-		var virtualPregap int64
+		first := tr.LogFrameOfs
+		var virtualPregap uint32
 		if tr.PregapDataSize != 0 {
-			first -= int64(tr.Pregap)
+			first -= tr.Pregap
 		} else {
-			virtualPregap = int64(tr.Pregap)
+			virtualPregap = tr.Pregap
 		}
-		end := first + int64(tr.Frames)
+		end := first + tr.Frames
 		switch {
-		case addr >= first-virtualPregap && addr < first:
+		case lba-(first-virtualPregap) < virtualPregap:
 			return Location{Track: i, Zero: true}, nil
-		case addr >= first && addr < end:
-			return Location{Track: i, Frame: uint64(tr.ChdFrameOfs) + uint64(addr-first)}, nil
-		case addr >= end && addr < end+int64(tr.Postgap):
+		case lba-first < tr.Frames:
+			return Location{Track: i, Frame: uint64(tr.ChdFrameOfs) + uint64(lba-first)}, nil
+		case lba-end < tr.Postgap:
 			return Location{Track: i, Zero: true}, nil
 		}
 	}

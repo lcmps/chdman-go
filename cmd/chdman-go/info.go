@@ -47,7 +47,7 @@ func runInfo(_ context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	for _, t := range r.Tracks() {
 		fmt.Fprintf(stdout, "TRACK:%d TYPE:%s FRAMES:%d PREGAP:%d POSTGAP:%d STARTLBA:%d\n",
-			t.Number, t.Type, t.Frames, t.Pregap, t.Postgap, t.StartLBA)
+			t.Number, t.Type, int32(t.Frames), int32(t.Pregap), int32(t.Postgap), t.StartLBA)
 	}
 	return exitOK
 }

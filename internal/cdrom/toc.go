@@ -135,8 +135,10 @@ func Metadata(toc TOC) []format.MetadataEntry {
 		if t.PregapDataSize > 0 {
 			pgType = "V" + pgType
 		}
+		// chdman prints its unsigned counts with %d, so one that wrapped past
+		// 2^31 reads back as a negative number, and the sha1 covers that text.
 		s := fmt.Sprintf("TRACK:%d TYPE:%s SUBTYPE:%s FRAMES:%d PREGAP:%d PGTYPE:%s PGSUB:%s POSTGAP:%d\x00",
-			i+1, t.Type, t.Sub, t.Frames, t.Pregap, pgType, t.PregapSub, t.Postgap)
+			i+1, t.Type, t.Sub, int32(t.Frames), int32(t.Pregap), pgType, t.PregapSub, int32(t.Postgap))
 		entries[i] = format.MetadataEntry{Tag: format.TagCHT2, Flags: format.FlagChecksum, Data: []byte(s)}
 	}
 	return entries
@@ -203,8 +205,10 @@ func parseTrack(e format.MetadataEntry) (parsedTrack, error) {
 		}
 		v[k] = val
 	}
+	// Every number is a %d of sscanf: a signed 32-bit value stored in an
+	// unsigned field, so a negative count wraps.
 	num := func(k string) (uint32, bool) {
-		n, err := strconv.ParseUint(v[k], 10, 31)
+		n, err := strconv.ParseInt(v[k], 10, 32)
 		return uint32(n), err == nil
 	}
 	trackNum, ok1 := num("TRACK")

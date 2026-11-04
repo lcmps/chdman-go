@@ -296,3 +296,78 @@ func TestCreateCDBinsStayBounded(t *testing.T) {
 		t.Errorf("%d hunks", got)
 	}
 }
+
+// negativePregapCue has INDEX 00 in one FILE and INDEX 01 at zero in the
+// next, so chdman stores a pregap of -40 frames. The field is an unsigned
+// frame count printed with %d, so it reads back as a negative number.
+func negativePregapCue(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	testimg.Bin(t, dir, "a.bin", testimg.Track{Mode: "MODE1/2352", Frames: 60, Shape: testimg.Mixed})
+	testimg.Bin(t, dir, "b.bin", testimg.Track{Mode: "AUDIO", Frames: 100, Shape: testimg.Mixed})
+	return testimg.WriteCue(t, dir, "d.cue", `FILE "a.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+FILE "b.bin" BINARY
+  TRACK 02 AUDIO
+    INDEX 00 00:00:40
+    INDEX 01 00:00:00
+`)
+}
+
+func TestNegativePregapMatchesChdman(t *testing.T) {
+	oracle.Require(t)
+	cue := negativePregapCue(t)
+	ctx := context.Background()
+
+	// Creating: both hashes, and the metadata text that the sha1 covers.
+	res := assertCreateCDMatches(t, cue, CreateOptions{}, "", 0)
+	ours := filepath.Join(t.TempDir(), "ours.chd")
+	if _, err := CreateCD(ctx, cue, ours, CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	theirs := filepath.Join(t.TempDir(), "theirs.chd")
+	oracle.CreateCD(t, cue, theirs, "", 0)
+	for _, chd := range []string{ours, theirs} {
+		r, err := Open(chd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var found bool
+		for _, m := range r.Info().Metadata {
+			found = found || strings.Contains(string(m.Data), "PREGAP:-40 ")
+		}
+		r.Close()
+		if !found {
+			t.Errorf("%s: no PREGAP:-40 in the metadata", filepath.Base(chd))
+		}
+	}
+	if res.SHA1 == "" {
+		t.Fatal("no sha1")
+	}
+
+	// Extracting: both CHDs must extract, to what chdman extracts.
+	for _, chd := range []string{ours, theirs} {
+		gotDir, wantDir := t.TempDir(), t.TempDir()
+		if _, err := ExtractCD(ctx, chd, filepath.Join(gotDir, "out.cue"), ExtractCDOptions{}); err != nil {
+			t.Fatalf("%s: %v", filepath.Base(chd), err)
+		}
+		oracle.ExtractCD(t, chd, filepath.Join(wantDir, "out.cue"), false)
+		assertSameOutput(t, gotDir, wantDir)
+	}
+
+	// Reading: the sectors of both CHDs agree with each other.
+	ro, err := Open(ours)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	rt, err := Open(theirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	if a, b := ro.Tracks(), rt.Tracks(); !slices.Equal(a, b) {
+		t.Errorf("tracks %+v, chdman's %+v", a, b)
+	}
+}
