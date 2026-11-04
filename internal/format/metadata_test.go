@@ -5,9 +5,9 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/lcmps/chdman-go/internal/chderr"
@@ -121,16 +121,28 @@ func TestReadMetadataRejectsOverlappingEntries(t *testing.T) {
 	}
 	binary.BigEndian.PutUint64(file[HeaderSize+16*(entries-1)+8:], 0)
 
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
-	_, err := ReadMetadata(bytes.NewReader(file), Header{MetaOffset: HeaderSize}, int64(len(file)))
-	runtime.ReadMemStats(&after)
+	// Count the bytes read instead of measuring the heap, which the race
+	// detector inflates. The summed claims exceed the file, so rejecting
+	// them must not take more reads than the file holds.
+	cr := &countingReaderAt{r: bytes.NewReader(file)}
+	_, err := ReadMetadata(cr, Header{MetaOffset: HeaderSize}, int64(len(file)))
 	if !errors.Is(err, chderr.CorruptData) {
 		t.Fatalf("err = %v, want CorruptData", err)
 	}
-	if grew := after.TotalAlloc - before.TotalAlloc; grew > 128<<20 {
-		t.Errorf("allocated %d MiB before rejecting", grew>>20)
+	if cr.n > int64(len(file)) {
+		t.Errorf("read %d bytes of a %d byte file before rejecting", cr.n, len(file))
 	}
+}
+
+type countingReaderAt struct {
+	r io.ReaderAt
+	n int64
+}
+
+func (c *countingReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	n, err := c.r.ReadAt(p, off)
+	c.n += int64(n)
+	return n, err
 }
 
 func TestOverallSHA1NoMetadata(t *testing.T) {
