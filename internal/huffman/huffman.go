@@ -410,6 +410,12 @@ func (c *Context) assignCanonicalCodes() error {
 		if n.numBits > 0 {
 			n.bits = bitHisto[n.numBits]
 			bitHisto[n.numBits]++
+			// An over-subscribed tree hands out codes too wide for their
+			// length. chdman does not check this; we reject it so the
+			// lookup table is never indexed out of range.
+			if n.numBits > 32 || uint64(n.bits) >= 1<<n.numBits {
+				return ErrInvalidData
+			}
 		}
 	}
 	return nil

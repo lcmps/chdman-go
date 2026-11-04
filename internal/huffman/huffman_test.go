@@ -2,6 +2,8 @@ package huffman
 
 import (
 	"bytes"
+	"errors"
+	"github.com/lcmps/chdman-go/internal/chderr"
 	"math/rand"
 	"testing"
 
@@ -143,4 +145,39 @@ func TestNewPanicsOverMaxBits(t *testing.T) {
 		}
 	}()
 	New(256, 25)
+}
+
+func TestImportRejectsInvalidTrees(t *testing.T) {
+	t.Run("rle oversubscribed", func(t *testing.T) {
+		c := New(256, 8)
+		err := c.ImportTreeRLE(bitstream.NewReader(bytes.Repeat([]byte{0x11}, 16)))
+		if !errors.Is(err, chderr.CorruptData) {
+			t.Fatalf("err = %v, want CorruptData", err)
+		}
+	})
+	t.Run("three codes of length one", func(t *testing.T) {
+		c := New(8, 8)
+		for i := 0; i < 3; i++ {
+			c.nodes[i].numBits = 1
+		}
+		if err := c.assignCanonicalCodes(); !errors.Is(err, chderr.CorruptData) {
+			t.Fatalf("err = %v, want CorruptData", err)
+		}
+	})
+}
+
+func TestImportNeverPanicsOnGarbage(t *testing.T) {
+	rng := rand.New(rand.NewSource(7))
+	for i := 0; i < 20000; i++ {
+		b := make([]byte, 1+rng.Intn(64))
+		rng.Read(b)
+		for _, imp := range []func(*Context, *bitstream.Reader) error{
+			(*Context).ImportTreeRLE, (*Context).ImportTreeHuffman,
+		} {
+			c := New(256, 16)
+			if err := imp(c, bitstream.NewReader(b)); err == nil {
+				c.Decode(bitstream.NewReader(b))
+			}
+		}
+	}
 }
