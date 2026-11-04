@@ -40,7 +40,15 @@
 //     header (known chdman 0.289 map defect), so every cell that reads
 //     chdman's file has at least four hunks, enforced by the runner.
 //
-// CHDMAN_GO_REAL_IMAGES=<dir> adds every .cue and .iso there as a cell.
+// CHDMAN_GO_REAL_IMAGES=<dir> adds every .cue and .iso there as a cell. The
+// directory must exist and hold at least one of them, or the run fails. Real
+// cells run one at a time and check hash parity, the read paths and
+// extraction: warnings are reported, not compared with a fixed set, and a
+// file of fewer than four hunks is read through its header only. Above
+// bigRealBytes of content the extra corruption checks and the second create
+// of the round trip are skipped, and every intermediate file is deleted as
+// soon as it has been compared. Run them with a generous -timeout and a
+// TMPDIR with room for several copies of the largest image; see the README.
 package compat
 
 import (
@@ -71,6 +79,11 @@ import (
 const minReadableHunks = 4
 
 const zeroHash = "0000000000000000000000000000000000000000"
+
+// bigRealBytes is the content size above which a real-image cell skips the
+// work that only repeats a check: three more full verifies per file for the
+// corruption checks, and the second create of the round trip.
+const bigRealBytes = 1 << 30
 
 // ---- shared helpers --------------------------------------------------------
 
@@ -241,11 +254,20 @@ func assertCorruptionCaught(t testing.TB, path string) {
 	for _, name := range slices.Sorted(mapsKeys(cases)) {
 		r, err := chdman.NewReader(flipAt{f, cases[name]}, st.Size())
 		if err != nil {
-			continue // refused at open, with an error
+			// Refused at open: the error must say the file is damaged.
+			if !errors.Is(err, chdman.ErrCorruptData) {
+				t.Errorf("%s: open with a flipped %s byte failed with %v, want ErrCorruptData", filepath.Base(path), name, err)
+			}
+			continue
 		}
 		res, err := r.Verify(context.Background(), chdman.VerifyOptions{Workers: 2})
-		if err == nil && res.Status == chdman.VerifyOK {
+		switch {
+		case err == nil && res.Status == chdman.VerifyOK:
 			t.Errorf("%s: a flipped %s byte at %d still verifies", filepath.Base(path), name, cases[name])
+		case err != nil && !errors.Is(err, chdman.ErrCorruptData) && !errors.Is(err, chdman.ErrHashMismatch):
+			// A damaged hunk is corrupt data and damaged content a hash
+			// mismatch; nothing else may explain the failure.
+			t.Errorf("%s: verify with a flipped %s byte failed with %v, want ErrCorruptData or ErrHashMismatch", filepath.Base(path), name, err)
 		}
 	}
 }
@@ -258,6 +280,67 @@ func mapsKeys[M ~map[string]V, V any](m M) func(func(string) bool) {
 			}
 		}
 	}
+}
+
+// assertSelfReferences fails unless the compressed file's map has hunks that
+// refer to an earlier identical hunk, which is what the Repeated shape is
+// there to exercise.
+func assertSelfReferences(t testing.TB, path string) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := format.ReadMap(f, readHeader(t, path), st.Size())
+	if err != nil {
+		t.Fatalf("%s: %v", filepath.Base(path), err)
+	}
+	var self uint32
+	for i := range m.Len() {
+		if m.Entry(i).Type == format.CompSelf {
+			self++
+		}
+	}
+	if self == 0 {
+		t.Errorf("%s: none of %d hunks is a self-reference; the Repeated cell does not exercise them", filepath.Base(path), m.Len())
+	}
+}
+
+// realImages returns the .cue and .iso files in CHDMAN_GO_REAL_IMAGES, or nil
+// when it is not set. A directory that does not exist, or that holds neither,
+// fails the test: running nothing would look like passing.
+func realImages(t *testing.T) (cues, isos []string) {
+	t.Helper()
+	dir := os.Getenv("CHDMAN_GO_REAL_IMAGES")
+	if dir == "" {
+		t.Log("CHDMAN_GO_REAL_IMAGES is not set; no extra cells") // not a skip: release runs allow none
+		return nil, nil
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("CHDMAN_GO_REAL_IMAGES: %v", err)
+	}
+	for _, e := range ents {
+		path := filepath.Join(dir, e.Name())
+		if st, err := os.Stat(path); err != nil || !st.Mode().IsRegular() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".cue":
+			cues = append(cues, path)
+		case ".iso":
+			isos = append(isos, path)
+		}
+	}
+	if len(cues)+len(isos) == 0 {
+		t.Fatalf("CHDMAN_GO_REAL_IMAGES=%s holds no .cue or .iso files", dir)
+	}
+	return cues, isos
 }
 
 func kinds(ws []chdman.Warning) []string {
@@ -312,6 +395,12 @@ type cdCell struct {
 	chdmanOnly bool
 	// extractWarn is the exact set of warning kinds ExtractCD reports.
 	extractWarn []chdman.WarningKind
+	// selfRefs: the data repeats, so both files must contain hunks that refer
+	// to an earlier identical hunk.
+	selfRefs bool
+	// real: one of the owner's own images. Warnings are not compared with a
+	// fixed set, the cell runs alone and cleans up as it goes.
+	real bool
 }
 
 func layoutCell(l testimg.Layout) cdCell {
@@ -396,7 +485,7 @@ func cdCells(t testing.TB) (groups []string, cells map[string][]cdCell) {
 			{"repeated", testimg.Repeated, false}, {"invalid-ecc", testimg.Repeated, true},
 		} {
 			d := withShape(layoutByName(t, ln).Disc, frames, s.shape)
-			c := cdCell{name: ln + "/" + s.name, disc: &d, build: func(t testing.TB, dir string) string {
+			c := cdCell{name: ln + "/" + s.name, disc: &d, selfRefs: s.shape == testimg.Repeated, build: func(t testing.TB, dir string) string {
 				cue := testimg.Cue(t, dir, d)
 				if s.ecc && d.Tracks[0].Mode != "MODE1/2048" {
 					corruptECC(t, dir, d)
@@ -591,20 +680,16 @@ func TestCD(t *testing.T) {
 	}
 }
 
-// TestCDRealImages runs the cells over the owner's own cues.
+// TestCDRealImages runs the cells over the owner's own cues, one at a time.
 func TestCDRealImages(t *testing.T) {
-	dir := os.Getenv("CHDMAN_GO_REAL_IMAGES")
-	if dir == "" {
-		t.Log("CHDMAN_GO_REAL_IMAGES is not set; no extra cells") // not a skip: release runs allow none
+	cues, _ := realImages(t)
+	if len(cues) == 0 {
 		return
 	}
 	oracle.Require(t)
-	cues, _ := filepath.Glob(filepath.Join(dir, "*.cue"))
 	for _, cue := range cues {
 		t.Run(filepath.Base(cue), func(t *testing.T) {
-			t.Parallel()
-			runCD(t, cdCell{name: filepath.Base(cue), lossy: true, warn: nil, build: func(testing.TB, string) string { return cue },
-				extractWarn: nil})
+			runCD(t, cdCell{name: filepath.Base(cue), lossy: true, real: true, build: func(testing.TB, string) string { return cue }})
 		})
 	}
 }
@@ -621,8 +706,13 @@ func runCD(t *testing.T, c cdCell) {
 	wantHdr := readHeader(t, want)
 	wantRaw, wantSum := hashes(wantHdr)
 	readable := wantHdr.HunkCount() >= minReadableHunks
-	if !readable && !c.headerOnly {
+	if !readable && !c.headerOnly && !c.real {
 		t.Fatalf("chdman's file has %d hunks; at least %d are needed to read it", wantHdr.HunkCount(), minReadableHunks)
+	}
+	// A big real image skips the checks that only repeat earlier work.
+	big := c.real && wantHdr.LogicalBytes > bigRealBytes
+	if big {
+		t.Logf("%d bytes: skipping the corruption checks and the round trip's second create", wantHdr.LogicalBytes)
 	}
 	if none != (wantRaw == zeroHash) {
 		t.Fatalf("chdman rawsha1 %s for codecs %q", wantRaw, c.codecs)
@@ -647,8 +737,10 @@ func runCD(t *testing.T, c cdCell) {
 		if r, s := hashes(readHeader(t, ours)); r != res.RawSHA1 || s != res.SHA1 {
 			t.Errorf("stored hashes %s/%s, result %s/%s", r, s, res.RawSHA1, res.SHA1)
 		}
-		// 6. Warnings.
-		if got, want := kinds(res.Warnings), wantKinds(c.warn...); !slices.Equal(got, want) {
+		// 6. Warnings. A real image has whatever its cue and bins give.
+		if c.real {
+			t.Logf("warnings: %+v", res.Warnings)
+		} else if got, want := kinds(res.Warnings), wantKinds(c.warn...); !slices.Equal(got, want) {
 			t.Errorf("warnings %v, want %v (%+v)", got, want, res.Warnings)
 		}
 		// 2. chdman reads ours.
@@ -656,8 +748,11 @@ func runCD(t *testing.T, c cdCell) {
 			t.Errorf("chdman rejects our file: %v", err)
 		}
 		assertVerify(t, openReader(t, ours), none)
-		if !none {
+		if !none && !big {
 			assertCorruptionCaught(t, ours)
+		}
+		if c.selfRefs {
+			assertSelfReferences(t, ours)
 		}
 	}
 
@@ -669,30 +764,35 @@ func runCD(t *testing.T, c cdCell) {
 	for _, split := range []bool{false, true} {
 		theirs := extractChdman(t, oursPath, split)
 		if !c.chdmanOnly {
-			assertSameDir(t, extractOurs(t, oursPath, split, c.extractWarn), theirs, "chdman-go extraction of our file")
+			assertSameDirAndDrop(t, c.extractOurs(t, oursPath, split), theirs, "chdman-go extraction of our file")
 		}
 		if readable {
-			assertSameDir(t, extractChdman(t, want, split), theirs, "chdman extraction of chdman's file and ours")
-			assertSameDir(t, extractOurs(t, want, split, c.extractWarn), theirs, "chdman-go extraction of chdman's file")
+			assertSameDirAndDrop(t, extractChdman(t, want, split), theirs, "chdman extraction of chdman's file and ours")
+			assertSameDirAndDrop(t, c.extractOurs(t, want, split), theirs, "chdman-go extraction of chdman's file")
 		}
-		if split || c.lossy || c.disc == nil {
-			continue
+		if !split && !c.lossy && c.disc != nil {
+			// Nothing is lost: the bins are the input, byte for byte.
+			if got, want := concatBins(t, theirs), concatBins(t, srcDir); !bytes.Equal(got, want) {
+				t.Errorf("extracted bins are %d bytes and differ from the input's %d", len(got), len(want))
+			}
 		}
-		// Nothing is lost: the bins are the input, byte for byte.
-		if got, want := concatBins(t, theirs), concatBins(t, srcDir); !bytes.Equal(got, want) {
-			t.Errorf("extracted bins are %d bytes and differ from the input's %d", len(got), len(want))
-		}
+		os.RemoveAll(theirs)
 	}
 
 	// 3. chdman-go reads chdman's file.
 	if readable {
 		r := openReader(t, want)
 		assertVerify(t, r, none)
-		if !none {
+		if !none && !big {
 			assertCorruptionCaught(t, want)
 		}
+		if c.selfRefs {
+			assertSelfReferences(t, want)
+		}
 		if !c.chdmanOnly {
-			assertSameReads(t, c.name, openReader(t, ours), r)
+			ro := openReader(t, ours)
+			assertSameReads(t, c.name, ro, r)
+			assertSameTracks(t, ro, r)
 		}
 		if c.disc != nil {
 			assertSectors(t, r, *c.disc, srcDir)
@@ -705,7 +805,12 @@ func runCD(t *testing.T, c cdCell) {
 	if readable {
 		rtSource = want
 	}
-	cuePath := filepath.Join(extractOurs(t, rtSource, c.disc != nil && c.disc.Split, c.extractWarn), "out.cue")
+	if big {
+		return
+	}
+	rtDir := c.extractOurs(t, rtSource, c.disc != nil && c.disc.Split)
+	defer os.RemoveAll(rtDir)
+	cuePath := filepath.Join(rtDir, "out.cue")
 	again := filepath.Join(work, "again.chd")
 	rt, err := chdman.CreateCD(ctx, cuePath, again, chdman.CreateOptions{Codecs: splitCodecs(c.codecs), HunkBytes: uint32(c.hunk), Workers: 2})
 	if err != nil {
@@ -715,9 +820,10 @@ func runCD(t *testing.T, c cdCell) {
 	if c.lossy {
 		// chdman's own create-extract-create, which does not keep the hashes
 		// of these shapes either.
-		theirCue := filepath.Join(extractChdman(t, rtSource, false), "out.cue")
+		theirDir := extractChdman(t, rtSource, false)
+		defer os.RemoveAll(theirDir)
 		chdRT := filepath.Join(work, "chdman-again.chd")
-		oracle.CreateCD(t, theirCue, chdRT, c.codecs, c.hunk)
+		oracle.CreateCD(t, filepath.Join(theirDir, "out.cue"), chdRT, c.codecs, c.hunk)
 		wantRT, wantRTSum = hashes(readHeader(t, chdRT))
 	}
 	if rt.RawSHA1 != wantRT {
@@ -728,7 +834,9 @@ func runCD(t *testing.T, c cdCell) {
 	}
 }
 
-func extractOurs(t testing.TB, chd string, split bool, warn []chdman.WarningKind) string {
+// extractOurs extracts with chdman-go into a new directory. A real image has
+// whatever warnings its cue gives; any other cell has exactly extractWarn.
+func (c cdCell) extractOurs(t testing.TB, chd string, split bool) string {
 	t.Helper()
 	dir := t.TempDir()
 	res, err := chdman.ExtractCD(context.Background(), chd, filepath.Join(dir, "out.cue"),
@@ -736,10 +844,28 @@ func extractOurs(t testing.TB, chd string, split bool, warn []chdman.WarningKind
 	if err != nil {
 		t.Fatalf("ExtractCD(%s): %v", filepath.Base(chd), err)
 	}
-	if got, want := kinds(res.Warnings), wantKinds(warn...); !slices.Equal(got, want) {
+	if c.real {
+		t.Logf("extraction warnings: %+v", res.Warnings)
+	} else if got, want := kinds(res.Warnings), wantKinds(c.extractWarn...); !slices.Equal(got, want) {
 		t.Errorf("extraction warnings %v, want %v", got, want)
 	}
 	return dir
+}
+
+// assertSameTracks compares the tracks that two readers report.
+func assertSameTracks(t testing.TB, a, b *chdman.Reader) {
+	t.Helper()
+	ta, err := a.Tracks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb, err := b.Tracks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(ta, tb) {
+		t.Errorf("tracks %+v, other file's %+v", ta, tb)
+	}
 }
 
 func extractChdman(t testing.TB, chd string, split bool) string {
@@ -749,32 +875,55 @@ func extractChdman(t testing.TB, chd string, split bool) string {
 	return dir
 }
 
-func dirFiles(t testing.TB, dir string) map[string][]byte {
+// fileDigest identifies a file's content without keeping it in memory, which
+// matters for a real image. The text of a .cue file is kept to explain a
+// difference.
+type fileDigest struct {
+	size int64
+	sum  string
+	text []byte
+}
+
+func dirDigests(t testing.TB, dir string) map[string]fileDigest {
 	t.Helper()
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := map[string][]byte{}
+	files := map[string]fileDigest{}
 	for _, e := range ents {
-		files[e.Name()] = readFile(t, filepath.Join(dir, e.Name()))
+		path := filepath.Join(dir, e.Name())
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := f.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := fileDigest{size: st.Size(), sum: hashFile(t, f)}
+		f.Close()
+		if strings.HasSuffix(e.Name(), ".cue") {
+			d.text = readFile(t, path)
+		}
+		files[e.Name()] = d
 	}
 	return files
 }
 
-// assertSameDir compares two extraction directories by file name and byte.
+// assertSameDir compares two extraction directories by file name and content.
 func assertSameDir(t testing.TB, got, want, what string) {
 	t.Helper()
-	g, w := dirFiles(t, got), dirFiles(t, want)
-	for name, wb := range w {
-		gb, ok := g[name]
+	g, w := dirDigests(t, got), dirDigests(t, want)
+	for name, wd := range w {
+		gd, ok := g[name]
 		switch {
 		case !ok:
 			t.Errorf("%s: missing %s; have %v", what, name, slices.Sorted(mapsKeys(g)))
-		case !bytes.Equal(gb, wb) && strings.HasSuffix(name, ".cue"):
-			t.Errorf("%s: %s differs:\n got %q\nwant %q", what, name, gb, wb)
-		case !bytes.Equal(gb, wb):
-			t.Errorf("%s: %s differs (%d bytes, want %d)", what, name, len(gb), len(wb))
+		case gd.sum != wd.sum && wd.text != nil:
+			t.Errorf("%s: %s differs:\n got %q\nwant %q", what, name, gd.text, wd.text)
+		case gd.sum != wd.sum:
+			t.Errorf("%s: %s differs (%d bytes, want %d)", what, name, gd.size, wd.size)
 		}
 	}
 	for name := range g {
@@ -784,14 +933,25 @@ func assertSameDir(t testing.TB, got, want, what string) {
 	}
 }
 
+// assertSameDirAndDrop is assertSameDir that then deletes got, so that the
+// copies of a large image do not pile up while a cell runs.
+func assertSameDirAndDrop(t testing.TB, got, want, what string) {
+	t.Helper()
+	assertSameDir(t, got, want, what)
+	os.RemoveAll(got)
+}
+
 // concatBins joins every bin of dir in name order, which is track order.
 func concatBins(t testing.TB, dir string) []byte {
 	t.Helper()
-	files := dirFiles(t, dir)
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var out []byte
-	for _, name := range slices.Sorted(mapsKeys(files)) {
-		if strings.HasSuffix(name, ".bin") {
-			out = append(out, files[name]...)
+	for _, e := range ents { // ReadDir sorts by name
+		if strings.HasSuffix(e.Name(), ".bin") {
+			out = append(out, readFile(t, filepath.Join(dir, e.Name()))...)
 		}
 	}
 	return out
@@ -886,6 +1046,11 @@ type dvdCell struct {
 	// sparse: a huge sparse input; the cell only checks hashes, verification
 	// and reads, not full extraction.
 	sparse bool
+	// selfRefs: the data repeats, so both files must contain self-references.
+	selfRefs bool
+	// real: one of the owner's own images; it runs alone and cleans up as it
+	// goes.
+	real bool
 }
 
 func isoCell(name string, sectors int, shape testimg.Shape) dvdCell {
@@ -928,7 +1093,9 @@ func dvdCells() (groups []string, cells map[string][]dvdCell) {
 	// Data shapes at the default codecs.
 	for name, shape := range map[string]testimg.Shape{"zeros": testimg.Zeros, "random": testimg.Random,
 		"repeated": testimg.Repeated, "mixed": testimg.Mixed} {
-		add("shapes", isoCell(name, 600, shape))
+		c := isoCell(name, 600, shape)
+		c.selfRefs = shape == testimg.Repeated
+		add("shapes", c)
 	}
 	// Hunk sizes.
 	for _, hs := range []int{2048, 4096, 8192, 32768, 262144} {
@@ -991,18 +1158,16 @@ func TestDVD(t *testing.T) {
 	}
 }
 
+// TestDVDRealImages runs the cells over the owner's own ISOs, one at a time.
 func TestDVDRealImages(t *testing.T) {
-	dir := os.Getenv("CHDMAN_GO_REAL_IMAGES")
-	if dir == "" {
-		t.Log("CHDMAN_GO_REAL_IMAGES is not set; no extra cells") // not a skip: release runs allow none
+	_, isos := realImages(t)
+	if len(isos) == 0 {
 		return
 	}
 	oracle.Require(t)
-	isos, _ := filepath.Glob(filepath.Join(dir, "*.iso"))
 	for _, iso := range isos {
 		t.Run(filepath.Base(iso), func(t *testing.T) {
-			t.Parallel()
-			runDVD(t, dvdCell{name: filepath.Base(iso), build: func(testing.TB, string) string { return iso }})
+			runDVD(t, dvdCell{name: filepath.Base(iso), real: true, build: func(testing.TB, string) string { return iso }})
 		})
 	}
 }
@@ -1049,8 +1214,12 @@ func runDVD(t *testing.T, c dvdCell) {
 	wantHdr := readHeader(t, want)
 	wantRaw, wantSum := hashes(wantHdr)
 	readable := wantHdr.HunkCount() >= minReadableHunks
-	if !readable && !c.headerOnly {
+	if !readable && !c.headerOnly && !c.real {
 		t.Fatalf("chdman's file has %d hunks; at least %d are needed to read it", wantHdr.HunkCount(), minReadableHunks)
+	}
+	big := c.real && wantHdr.LogicalBytes > bigRealBytes
+	if big {
+		t.Logf("%d bytes: skipping the corruption checks and the round trip's second create", wantHdr.LogicalBytes)
 	}
 
 	ours := filepath.Join(work, "ours.chd")
@@ -1077,13 +1246,17 @@ func runDVD(t *testing.T, c dvdCell) {
 	}
 	ro := openReader(t, ours)
 	assertVerify(t, ro, none)
-	if !none {
+	if !none && !big {
 		assertCorruptionCaught(t, ours)
+	}
+	if c.selfRefs {
+		assertSelfReferences(t, ours)
 	}
 	if !c.sparse {
 		out := filepath.Join(work, "chdman.iso")
 		oracle.ExtractDVD(t, ours, out)
 		assertSameFile(t, out, iso, "chdman's extraction of our file")
+		os.Remove(out)
 	}
 	assertISOReads(t, c.name, ro, iso, isoSize)
 
@@ -1091,8 +1264,11 @@ func runDVD(t *testing.T, c dvdCell) {
 	if readable {
 		rw := openReader(t, want)
 		assertVerify(t, rw, none)
-		if !none {
+		if !none && !big {
 			assertCorruptionCaught(t, want)
+		}
+		if c.selfRefs {
+			assertSelfReferences(t, want)
 		}
 		assertISOReads(t, c.name+"/chdman", rw, iso, isoSize)
 		if !c.sparse {
@@ -1101,12 +1277,13 @@ func runDVD(t *testing.T, c dvdCell) {
 				t.Fatal(err)
 			}
 			assertSameFile(t, out, iso, "chdman-go extraction of chdman's file")
+			os.Remove(out)
 			assertSameReads(t, c.name, ro, rw)
 		}
 	}
 
 	// 5. Round trip: DVD extraction loses nothing, so the hashes are kept.
-	if c.sparse {
+	if c.sparse || big {
 		return
 	}
 	out := filepath.Join(work, "ours.iso")
@@ -1114,6 +1291,7 @@ func runDVD(t *testing.T, c dvdCell) {
 		t.Fatal(err)
 	}
 	assertSameFile(t, out, iso, "chdman-go extraction of our file")
+	defer os.Remove(out)
 	rt, err := chdman.CreateDVD(ctx, out, filepath.Join(work, "again.chd"), chdman.CreateOptions{Codecs: splitCodecs(c.codecs), HunkBytes: uint32(c.hunk), Workers: 4})
 	if err != nil {
 		t.Fatal(err)
