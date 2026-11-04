@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -237,5 +238,155 @@ func TestOrderedSinkStopsAfterCancel(t *testing.T) {
 	}
 	if sunk != 1 {
 		t.Errorf("sink ran %d times, want 1: the rest were ready when the context ended", sunk)
+	}
+}
+
+// pipelineGoroutines returns the stacks of live goroutines that run code from
+// this package, apart from the test's own.
+func pipelineGoroutines() []string {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	var found []string
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(g, "internal/pipeline.Ordered") && !strings.Contains(g, "testing.tRunner") {
+			found = append(found, g)
+		}
+	}
+	return found
+}
+
+// assertNoPipelineGoroutines fails if any goroutine started by Ordered is
+// still running once it had time to wind down.
+func assertNoPipelineGoroutines(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		left := pipelineGoroutines()
+		if len(left) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d pipeline goroutines leaked:\n%s", len(left), strings.Join(left, "\n\n"))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// run calls Ordered and returns what it returned, or the value that it
+// panicked with in the caller.
+func run(ctx context.Context, workers int, in func(func(int) bool) error,
+	newWorker func() (func(int) (int, error), error), sink func(int) error) (err error, panicked any) {
+	defer func() { panicked = recover() }()
+	return Ordered(ctx, workers, in, newWorker, sink), nil
+}
+
+func TestOrderedNoLeaks(t *testing.T) {
+	boom := errors.New("boom")
+	nop := func(int) error { return nil }
+	modes := map[string]func(ctx context.Context, cancel func()) (error, any){
+		"success": func(ctx context.Context, _ func()) (error, any) {
+			return run(ctx, 4, countSource(100), identityWorker, nop)
+		},
+		"empty": func(ctx context.Context, _ func()) (error, any) {
+			return run(ctx, 4, countSource(0), identityWorker, nop)
+		},
+		"source error": func(ctx context.Context, _ func()) (error, any) {
+			src := func(yield func(int) bool) error {
+				for i := 0; i < 10 && yield(i); i++ {
+				}
+				return boom
+			}
+			return run(ctx, 4, src, identityWorker, nop)
+		},
+		"worker error": func(ctx context.Context, _ func()) (error, any) {
+			w := func() (func(int) (int, error), error) {
+				return func(v int) (int, error) {
+					if v == 7 {
+						return 0, boom
+					}
+					return v, nil
+				}, nil
+			}
+			return run(ctx, 4, countSource(1000), w, nop)
+		},
+		"newWorker error": func(ctx context.Context, _ func()) (error, any) {
+			w := func() (func(int) (int, error), error) { return nil, boom }
+			return run(ctx, 4, countSource(1000), w, nop)
+		},
+		"sink error": func(ctx context.Context, _ func()) (error, any) {
+			return run(ctx, 4, countSource(1000), identityWorker, func(v int) error {
+				if v == 3 {
+					return boom
+				}
+				return nil
+			})
+		},
+		"cancel": func(ctx context.Context, cancel func()) (error, any) {
+			return run(ctx, 4, countSource(1_000_000), identityWorker, func(v int) error {
+				if v == 50 {
+					cancel()
+				}
+				return nil
+			})
+		},
+		"source panic": func(ctx context.Context, _ func()) (error, any) {
+			src := func(yield func(int) bool) error {
+				yield(0)
+				panic(boom)
+			}
+			return run(ctx, 4, src, identityWorker, nop)
+		},
+		"worker panic": func(ctx context.Context, _ func()) (error, any) {
+			w := func() (func(int) (int, error), error) {
+				return func(v int) (int, error) {
+					if v == 7 {
+						panic(boom)
+					}
+					return v, nil
+				}, nil
+			}
+			return run(ctx, 4, countSource(1000), w, nop)
+		},
+		"newWorker panic": func(ctx context.Context, _ func()) (error, any) {
+			w := func() (func(int) (int, error), error) { panic(boom) }
+			return run(ctx, 4, countSource(1000), w, nop)
+		},
+		"sink panic": func(ctx context.Context, _ func()) (error, any) {
+			return run(ctx, 4, countSource(1000), identityWorker, func(v int) error {
+				if v == 3 {
+					panic(boom)
+				}
+				return nil
+			})
+		},
+	}
+	wantPanic := map[string]bool{"source panic": true, "worker panic": true, "newWorker panic": true, "sink panic": true}
+	wantErr := map[string]error{
+		"success": nil, "empty": nil, "source error": boom, "worker error": boom, "newWorker error": boom,
+		"sink error": boom, "cancel": context.Canceled, "source panic": nil, "worker panic": nil,
+		"newWorker panic": nil, "sink panic": nil,
+	}
+	for name, mode := range modes {
+		t.Run(name, func(t *testing.T) {
+			for range 20 {
+				ctx, cancel := context.WithCancel(context.Background())
+				err, panicked := mode(ctx, cancel)
+				cancel()
+				if wantPanic[name] {
+					if panicked != boom {
+						t.Fatalf("panic value = %v, want the original %v", panicked, boom)
+					}
+				} else if panicked != nil {
+					t.Fatalf("unexpected panic %v", panicked)
+				} else if !errors.Is(err, wantErr[name]) {
+					t.Fatalf("err = %v, want %v", err, wantErr[name])
+				}
+				// Ordered must not return while a goroutine of its own runs.
+				if left := pipelineGoroutines(); len(left) != 0 {
+					t.Fatalf("%d pipeline goroutines running after return:\n%s", len(left), strings.Join(left, "\n\n"))
+				}
+			}
+			assertNoPipelineGoroutines(t)
+		})
 	}
 }
