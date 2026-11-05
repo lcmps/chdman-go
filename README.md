@@ -142,9 +142,29 @@ On 32-bit platforms images over 2 GiB read correctly.
 - **Sector addressing in pregaps.** `ReadSector` and `ReadUserData` use logical addresses by default, the disc positions that file systems use; set `ReadOptions{Physical: true}` to count frames as stored, as `extractcd` does. An address inside a track's pregap belongs to the track that owns the pregap, and a pregap that is not stored, or a postgap, reads as zeros. chdman's `logical_to_chd_lba` assigns those addresses to the previous track instead. No chdman command uses that path, so hashes and extraction match regardless.
 - **Reference version and multisession.** Compatibility is with chdman 0.289 (`mame-tools 0.289`), not newer releases: the LZMA level is 8, as 0.289 uses, and no `CHSE` session entries are written. Files from newer chdman that hold `CHSE` entries still open, verify and extract, with those entries ignored. A CHD does not record lead-in and lead-out, so on a multisession disc the sector addresses of later sessions may not come out exactly as the cue sheet gave them, and every track reports session 1. 0.289 behaves the same way. Create, extract and create again keeps both hashes for ordinary inputs, but not `sha1` for tracks whose `INDEX 00` equals `INDEX 01` (multisession ones included) or for `MODE2_FORM_MIX`, and `rawsha1` also changes for tracks with subcode. chdman behaves the same, and chdman-go's round trip matches chdman's own.
 
+## Results on real discs
+
+These results compare chdman-go with chdman 0.289 on two game discs, using default options on one 16-thread Linux machine. Your numbers will differ.
+
+| Disc | Contents |
+|---|---|
+| PS2 CD game | 639 MB: one data track |
+| PS1 game | 688 MB: one data track and two audio tracks |
+
+`rawsha1` and `sha1` match chdman on both discs, and `chdman verify` accepts chdman-go's files.
+
+| Measure | PS2 CD: chdman | PS2 CD: chdman-go | PS1: chdman | PS1: chdman-go |
+|---|---|---|---|---|
+| Create | 12.9 s | 20.5 s | 14.1 s | 21.3 s |
+| Verify | 18.9 s | 3.7 s | 21.6 s | 3.8 s |
+| Extract | 16.3 s | 3.2 s | 18.4 s | 3.6 s |
+| CHD size | 451.51 MB | 456.78 MB | 461.17 MB | 460.67 MB |
+
+Create times vary between runs. A later run of the same build took 17.5 s and 18.8 s.
+
 ## Results on synthetic data
 
-These results compare chdman-go with chdman 0.289 on generated images, not real games, so your numbers will differ. Each tool ran alone with default options on one idle 16-thread Linux machine, with files on tmpfs.
+These results compare chdman-go with chdman 0.289 on generated images, not real games, so your numbers will differ. Each tool ran alone with default options on one idle 16-thread Linux machine, with files on tmpfs. They were measured before CD FLAC was skipped for data sectors, which made create about 23% faster on the real discs above, so the create times here are out of date.
 
 | Test image | Contents |
 |---|---|
