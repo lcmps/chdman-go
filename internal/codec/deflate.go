@@ -5,9 +5,10 @@ package codec
 
 import (
 	"bytes"
-	"compress/flate"
 	"fmt"
 	"io"
+
+	"github.com/klauspost/compress/flate"
 
 	"github.com/lcmps/chdman-go/internal/chderr"
 )
