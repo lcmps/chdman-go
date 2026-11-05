@@ -142,13 +142,51 @@ On 32-bit platforms images over 2 GiB read correctly.
 - **Sector addressing in pregaps.** `ReadSector` and `ReadUserData` use logical addresses by default, the disc positions that file systems use; set `ReadOptions{Physical: true}` to count frames as stored, as `extractcd` does. An address inside a track's pregap belongs to the track that owns the pregap, and a pregap that is not stored, or a postgap, reads as zeros. chdman's `logical_to_chd_lba` assigns those addresses to the previous track instead. No chdman command uses that path, so hashes and extraction match regardless.
 - **Reference version and multisession.** Compatibility is with chdman 0.289 (`mame-tools 0.289`), not newer releases: the LZMA level is 8, as 0.289 uses, and no `CHSE` session entries are written. Files from newer chdman that hold `CHSE` entries still open, verify and extract, with those entries ignored. A CHD does not record lead-in and lead-out, so on a multisession disc the sector addresses of later sessions may not come out exactly as the cue sheet gave them, and every track reports session 1. 0.289 behaves the same way. Create, extract and create again keeps both hashes for ordinary inputs, but not `sha1` for tracks whose `INDEX 00` equals `INDEX 01` (multisession ones included) or for `MODE2_FORM_MIX`, and `rawsha1` also changes for tracks with subcode. chdman behaves the same, and chdman-go's round trip matches chdman's own.
 
-## Performance
+## Results on synthetic data
 
-Measured on one 16-thread machine with generated images, against chdman 0.289 on the same input; your numbers will differ.
+These results compare chdman-go with chdman 0.289 on generated images, not real games, so your numbers will differ. Each tool ran alone with default options on one idle 16-thread Linux machine, with files on tmpfs.
 
-- Creating takes about 1.7 to 2.6 times chdman's wall time, and the CHDs are 2.5 to 7.5% larger.
-- Verifying and extracting are about 3 times faster than chdman in wall time, at about 4 to 5 times the CPU.
-- Creating a PS2-sized (4.7 GB) image peaked at 263 MB of memory.
+| Test image | Contents |
+|---|---|
+| PS1-like | About 365 MB: `MODE2/2352` data plus 6 audio tracks with `INDEX 00`, as a single bin and as split bins |
+| CD | About 697 MB: `MODE1` data plus audio |
+| PS2-like DVD | 4.7 GB ISO: zeros, random data, text, textures, code, PCM and duplicate blocks |
+
+### Compatibility
+
+| Check | PS1-like, single bin | PS1-like, split bins | CD | PS2-like DVD |
+|---|---|---|---|---|
+| `rawsha1` and `sha1` equal chdman's | Yes | Yes | Yes | Yes |
+| `chdman verify` accepts chdman-go's file | Yes | Yes | Yes | Yes |
+| chdman-go verifies chdman's file | Yes | Yes | Yes | Yes |
+| Both tools extract both files to the same data | Yes | Yes | Yes | Yes |
+
+| Other check | Result |
+|---|---|
+| Unusual cue sheets compared directly with chdman | 196 cases, 0 differences |
+| Bugs deliberately injected to test the test suite | 13 of 13 caught |
+
+### Speed and memory
+
+Each cell shows wall time and peak memory. The PS1-like column is the single-bin image.
+
+| Operation | PS1-like: chdman | PS1-like: chdman-go | CD: chdman | CD: chdman-go | DVD: chdman | DVD: chdman-go |
+|---|---|---|---|---|---|---|
+| Create | 9.9 s, 268 MB | 25.7 s, 185 MB | 20.3 s, 504 MB | 49.7 s, 191 MB | 163 s, 17,142 MB* | 274 s, 263 MB |
+| Verify | 15.3 s, 38 MB | 4.8 s, 26 MB | 25.8 s, 38 MB | 7.8 s, 26 MB | 106 s, 51 MB | 36 s, 88 MB |
+| Extract | 8.8 s, 39 MB | 2.9 s, 123-150 MB | 24.1 s, 39 MB | 6.2 s, 155 MB | 85 s, 51 MB | 31 s, 210 MB |
+
+\* This peak may be inflated by the files being on tmpfs. It was not investigated.
+
+### CPU time and file size
+
+| Measure | PS1-like: chdman | PS1-like: chdman-go | CD: chdman | CD: chdman-go | DVD: chdman | DVD: chdman-go |
+|---|---|---|---|---|---|---|
+| Create CPU time | 150 s | 393 s | 295 s | 711 s | 2,257 s | 3,892 s |
+| Verify CPU time | 15 s | 46 s | 26 s | 99 s | 106 s | 432 s |
+| CHD size compared with chdman's | n/a | +7.5% | n/a | +5.4% | n/a | +2.5% |
+
+In short, creating takes about 1.7 to 2.6 times as long as chdman and the files are slightly larger. Verifying and extracting are about 3 to 4 times faster in wall time because the work runs in parallel, so the speedup depends on your core count. Verifying uses about 3 to 4 times the CPU time.
 
 ## Development
 
